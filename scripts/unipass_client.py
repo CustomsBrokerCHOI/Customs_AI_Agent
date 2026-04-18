@@ -90,6 +90,63 @@ class UnipassClient:
 
         return root
 
+    def get_hs_code_info(
+        self,
+        hs_code: str,
+        service_name: str = "retrieveTrrfCd",
+    ) -> dict[str, str | None] | None:
+        """HS 코드 기준 관세율·품목명 조회.
+
+        실제 서비스/태그명은 UNIPASS 명세서 버전에 따라 다를 수 있으므로,
+        호출 후 반환되는 ``Element`` 구조를 한 번 검증한 뒤 운영 환경에 적용한다.
+
+        :param hs_code: 10자리 HS 부호(예: ``"8471300000"``).
+        :param service_name: UNIPASS 서비스명. 기본값은 관세율 조회 서비스.
+        :returns: 첫 번째 결과 row를 dict 로 변환. 결과가 없으면 ``None``.
+        """
+        root = self.call(
+            service_name=service_name,
+            operation=service_name,
+            params={"hsSgn": hs_code},
+        )
+        item = root.find(".//hsSgn/..") or root.find(".//*[hsSgn]")
+        if item is None:
+            return None
+        return {
+            "hs_code": item.findtext("hsSgn"),
+            "name_kr": item.findtext("korItemNm"),
+            "name_en": item.findtext("engItemNm"),
+            "base_rate": item.findtext("trrfCd") or item.findtext("totTaxRt"),
+        }
+
+    def get_classification_cases(
+        self,
+        item_name: str,
+        service_name: str = "retrieveCsClCdInfo",
+    ) -> list[dict[str, str | None]]:
+        """품목분류 사례 조회.
+
+        :param item_name: 검색할 품목명.
+        :param service_name: UNIPASS 서비스명. 명세서로 확인 후 조정.
+        :returns: 사례 row 리스트. 없으면 빈 리스트.
+        """
+        root = self.call(
+            service_name=service_name,
+            operation=service_name,
+            params={"itemNm": item_name},
+        )
+        cases: list[dict[str, str | None]] = []
+        for node in root.findall(".//*[hsSgn]"):
+            cases.append(
+                {
+                    "hs_code": node.findtext("hsSgn"),
+                    "item_name": node.findtext("itemNm") or node.findtext("korItemNm"),
+                    "decision_date": node.findtext("dcsnDt"),
+                    "summary": node.findtext("dcsnSumry") or node.findtext("dscrCn"),
+                }
+            )
+        return cases
+
 
 def _configure_logging() -> None:
     logging.basicConfig(
