@@ -11,9 +11,17 @@
 
 ## UNIPASS API
 
-- 엔드포인트 예시: `https://unipass.customs.go.kr:38010/ext/rest/<serviceName>/<operation>`
+- 엔드포인트: `https://unipass.customs.go.kr:38010/ext/rest/<serviceName>/<operation>`
 - 인증키(crkyCn)는 환경변수 `UNIPASS_API_KEY` 로만 주입한다. 코드/로그에 평문으로 남기지 않는다.
 - 기본 클라이언트: `scripts/unipass_client.py` 의 `UnipassClient` 를 재사용한다.
+- 확인된 주요 서비스명:
+  - HS 부호 조회: `hsSgnQry/searchHsSgn`
+  - 관세환율 정보: `trifFxrtInfoQry/retrieveTrifFxrtInfo`
+  - 통계부호: `statsSgnQry/retrieveStatsSgnBrkd`
+  - 화물통관 진행: `cargCsclPrgsInfoQry/retrieveCargCsclPrgsInfo`
+- **관세율표(trrf) 와 품목분류 사례는 UNIPASS API 미제공** → CLIP 스크래퍼로 수집한다.
+- 응답 XML 태그명은 로그인 후 연계가이드 PDF 에만 공개되므로, 신규 서비스 연동 시
+  실 호출로 구조를 확인한 뒤 파서를 확정한다.
 
 ## Conventions
 
