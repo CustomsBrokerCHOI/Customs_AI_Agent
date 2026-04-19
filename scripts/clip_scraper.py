@@ -1,23 +1,18 @@
-"""CLIP(관세법령정보포털) 해설서·주규정 수집 스크래퍼 (Playwright 기반).
+"""CLIP(관세법령정보포털) 해설서 스크래퍼 (Playwright 기반).
 
-CLIP은 jQuery 1.10 + `jquery.tmpl` 로 **클라이언트 사이드 렌더링**하는 사이트다.
-`requests + BeautifulSoup` 으로는 빈 템플릿만 수신되므로, 브라우저를 구동해
-JS 실행 후 렌더된 DOM을 수집한다.
+진입점: ``/clip/hsinfosrch/openULS0202001Q.do``
+
+실측된 DOM 구조:
+- 검색 폼 ``#searchVo``: ``#srchManlUtSgn`` (HS 4자리), ``#lworBsopAplyStrtYy`` (연도),
+  라디오 ``#iWco`` (WCO/AHTN 등 구분). submit 후 ``#ULS0202001Q_T1_table1`` 에
+  결과 행이 생성되며 ``a.dtlInfo`` 클릭 시 상세(``#dtlLayer``) 가 펼쳐진다.
+- 상세 탭은 페이지 렌더 시점에 이미 DOM 에 함께 로드되어 있어, 탭 전환 없이
+  한 번에 4개(통칙/부/류/호) × 2(국문/영문) 를 수집할 수 있다.
 
 사용 전 설치::
 
     pip install playwright
     playwright install chromium
-
-운영 적용 전 반드시 점검할 것:
-
-1. 대상 페이지(``HS_MANUAL_PATH``)의 실제 네비게이션 플로우 — 호 번호 선택, iframe,
-   탭 전환 등이 DOM 구조에 영향을 줄 수 있다.
-2. `Selectors` 의 기본값은 렌더된 페이지 점검 후 갱신 필요. 현재 값은
-   CLIP의 `leftmenu`, `mainarea` 등 공통 컨테이너 힌트에 기반한 추정치이다.
-3. robots.txt · 이용약관 상 자동 수집 허용 여부 확인.
-4. SSO/로그인 필요 여부 — 해설서 조회는 통상 공개이나, 일부 기능은
-   ``storage_state`` 로 쿠키·세션 주입이 필요할 수 있다.
 """
 
 from __future__ import annotations
@@ -46,17 +41,22 @@ DEFAULT_USER_AGENT = "CustomsAIAgent/0.1 (+contact: ops@example.com)"
 DEFAULT_TIMEOUT_MS = 20_000
 DEFAULT_RATE_LIMIT_SEC = 1.0
 
+# 실측된 DOM 셀렉터. CLIP 개편 시 갱신 필요.
+SEL_HS_INPUT = "#srchManlUtSgn"
+SEL_YEAR_SELECT = "#lworBsopAplyStrtYy"
+SEL_WCO_RADIO = "#iWco"
+SEL_FORM_SUBMIT = "#searchVo button[type='submit']"
+SEL_RESULT_TABLE = "#ULS0202001Q_T1_table1"
+SEL_RESULT_DETAIL_LINK = "#ULS0202001Q_T1_table1 a.dtlInfo"
+SEL_DETAIL_LAYER = "#dtlLayer"
 
-@dataclass(frozen=True)
-class Selectors:
-    """렌더된 CLIP 페이지의 DOM 셀렉터. 실제 페이지 점검 후 갱신 필요."""
-
-    ready_indicator: str = "#mainarea :not(:empty)"  # 렌더 완료 판정 힌트
-    section_note: str = "[data-kind='section-note'], .section-note"
-    chapter_note: str = "[data-kind='chapter-note'], .chapter-note"
-    heading_body: str = "[data-kind='heading-body'], .heading-content, #mainarea"
-    heading_search_input: str = "#uniSrchText2"
-    heading_search_submit: str = "#btnHsSearch"
+TAB_SELECTORS: dict[str, tuple[str, str]] = {
+    # 탭 id → (국문 pre 셀렉터, 영문 pre 셀렉터)
+    "general_rule": ("#divLft_tab1 pre", "#divRght_tab1 pre"),
+    "section_note": ("#divLft_tab2 pre", "#divRght_tab2 pre"),
+    "chapter_note": ("#divLft_tab3 pre", "#divRght_tab3 pre"),
+    "heading_note": ("#divLft_tab4 pre", "#divRght_tab4 pre"),
+}
 
 
 class ClipScrapeError(RuntimeError):
@@ -64,30 +64,45 @@ class ClipScrapeError(RuntimeError):
 
 
 @dataclass
+class BilingualText:
+    ko: str | None = None
+    en: str | None = None
+
+    def is_empty(self) -> bool:
+        return not (self.ko or self.en)
+
+
+@dataclass
 class ExplanatoryNote:
+    """CLIP HS해설서 한 건. 호(Heading) 단위."""
+
     heading: str
-    section_note: str | None
-    chapter_note: str | None
-    content: str | None
+    year: str
+    general_rule: BilingualText = field(default_factory=BilingualText)
+    section_note: BilingualText = field(default_factory=BilingualText)
+    chapter_note: BilingualText = field(default_factory=BilingualText)
+    heading_note: BilingualText = field(default_factory=BilingualText)
     metadata: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
         return {
             "heading": self.heading,
-            "section_note": self.section_note,
-            "chapter_note": self.chapter_note,
-            "content": self.content,
+            "year": self.year,
+            "general_rule": vars(self.general_rule),
+            "section_note": vars(self.section_note),
+            "chapter_note": vars(self.chapter_note),
+            "heading_note": vars(self.heading_note),
             "metadata": dict(self.metadata),
         }
 
 
 class ClipScraper(AbstractContextManager["ClipScraper"]):
-    """Playwright 기반 CLIP 해설서 스크래퍼.
+    """CLIP 해설서 스크래퍼 (Playwright 기반).
 
-    컨텍스트 매니저로 사용하여 브라우저 리소스를 안전하게 정리한다::
+    컨텍스트 매니저로 사용한다::
 
         with ClipScraper(headless=True) as scraper:
-            note = scraper.fetch_explanatory_note("8471")
+            note = scraper.fetch_explanatory_note("8471", year="2022")
     """
 
     def __init__(
@@ -96,18 +111,14 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
         user_agent: str = DEFAULT_USER_AGENT,
         timeout_ms: int = DEFAULT_TIMEOUT_MS,
         rate_limit_sec: float = DEFAULT_RATE_LIMIT_SEC,
-        hsk_version: str = "2022",
         headless: bool = True,
-        selectors: Selectors = Selectors(),
         storage_state: str | None = None,
     ) -> None:
         self.base_url = base_url
         self.user_agent = user_agent
         self.timeout_ms = timeout_ms
         self.rate_limit_sec = rate_limit_sec
-        self.hsk_version = hsk_version
         self.headless = headless
-        self.selectors = selectors
         self.storage_state = storage_state
 
         self._playwright: Playwright | None = None
@@ -143,56 +154,78 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
             self._playwright.stop()
         self._page = self._context = self._browser = self._playwright = None
 
-    def fetch_explanatory_note(self, heading_no: str) -> ExplanatoryNote:
-        """4자리 호 번호 기준 해설서 수집."""
+    def fetch_explanatory_note(
+        self,
+        heading_no: str,
+        year: str = "2022",
+    ) -> ExplanatoryNote:
+        """4자리 호(Heading) 번호 기준 해설서 수집.
+
+        :param heading_no: 4자리 호 (예: ``"8471"``).
+        :param year: HSK 연도 (``2007/2012/2017/2022``).
+        """
+        if len(heading_no) != 4 or not heading_no.isdigit():
+            raise ValueError(f"heading_no 는 4자리 숫자여야 합니다: {heading_no!r}")
+
         page = self._require_page()
         self._respect_rate_limit()
 
-        url = f"{self.base_url}{HS_MANUAL_PATH}"
-        logger.debug("CLIP goto %s (heading=%s)", url, heading_no)
-        page.goto(url, wait_until="domcontentloaded")
-
-        try:
-            page.wait_for_selector(self.selectors.ready_indicator)
-        except PlaywrightTimeoutError as exc:
-            raise ClipScrapeError("CLIP 페이지 초기 렌더 대기 실패") from exc
-
-        self._select_heading(heading_no)
-
-        try:
-            page.wait_for_load_state("networkidle")
-        except PlaywrightTimeoutError:
-            logger.warning("networkidle 대기 타임아웃 — 부분 수집 가능성 있음")
+        page.goto(f"{self.base_url}{HS_MANUAL_PATH}", wait_until="domcontentloaded")
+        self._submit_search(heading_no=heading_no, year=year)
+        self._open_detail()
 
         note = ExplanatoryNote(
             heading=heading_no,
-            section_note=self._text_or_none(self.selectors.section_note),
-            chapter_note=self._text_or_none(self.selectors.chapter_note),
-            content=self._text_or_none(self.selectors.heading_body),
+            year=year,
             metadata={
                 "source": "CLIP",
-                "hsk_version": self.hsk_version,
                 "url": page.url,
+                "manl_orgn": "WCO",
             },
         )
+        for attr, (ko_sel, en_sel) in TAB_SELECTORS.items():
+            setattr(
+                note,
+                attr,
+                BilingualText(
+                    ko=self._text_or_none(ko_sel),
+                    en=self._text_or_none(en_sel),
+                ),
+            )
+
         self._last_request_at = time.monotonic()
         return note
 
-    def fetch_many(self, heading_nos: Iterable[str]) -> list[ExplanatoryNote]:
-        return [self.fetch_explanatory_note(h) for h in heading_nos]
+    def fetch_many(
+        self,
+        heading_nos: Iterable[str],
+        year: str = "2022",
+    ) -> list[ExplanatoryNote]:
+        return [self.fetch_explanatory_note(h, year=year) for h in heading_nos]
 
-    def _select_heading(self, heading_no: str) -> None:
-        """상단 세번∙상품검색 입력창에 호 번호 입력 후 검색.
-
-        실제 해설서 탐색 방식은 좌측 트리 클릭이 자연스러울 수 있으므로,
-        실페이지 확인 후 이 메서드는 트리 내비게이션으로 교체될 가능성이 높다.
-        """
+    def _submit_search(self, heading_no: str, year: str) -> None:
         page = self._require_page()
         try:
-            page.fill(self.selectors.heading_search_input, heading_no)
-            page.click(self.selectors.heading_search_submit)
+            page.wait_for_selector(SEL_HS_INPUT)
+            page.check(SEL_WCO_RADIO)
+            page.select_option(SEL_YEAR_SELECT, value=year)
+            page.fill(SEL_HS_INPUT, heading_no)
+            page.click(SEL_FORM_SUBMIT)
+            page.wait_for_selector(f"{SEL_RESULT_TABLE} tbody tr")
         except PlaywrightTimeoutError as exc:
-            raise ClipScrapeError(f"호 번호 입력/검색 실패: {heading_no}") from exc
+            raise ClipScrapeError(
+                f"검색 폼 제출/결과 대기 실패 (heading={heading_no}, year={year})"
+            ) from exc
+
+    def _open_detail(self) -> None:
+        page = self._require_page()
+        try:
+            page.click(SEL_RESULT_DETAIL_LINK)
+            page.wait_for_selector(SEL_DETAIL_LAYER)
+            # 탭 본문이 렌더되었는지 최소 한 영역으로 확인
+            page.wait_for_selector(TAB_SELECTORS["heading_note"][0])
+        except PlaywrightTimeoutError as exc:
+            raise ClipScrapeError("상세(dtlLayer) 렌더 대기 실패") from exc
 
     def _text_or_none(self, selector: str) -> str | None:
         page = self._require_page()
