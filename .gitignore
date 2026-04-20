@@ -1,0 +1,36 @@
+# 비밀값
+.env
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.Python
+*.egg-info/
+dist/
+build/
+
+# 수집 원본 데이터 (대용량)
+data/raw/
+data/cache/
+
+# 생성 리포트 (HTML)
+reports/*.html
+reports/**/*.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/

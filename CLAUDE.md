@@ -16,10 +16,12 @@
 - 기본 클라이언트: `scripts/unipass_client.py` 의 `UnipassClient` 를 재사용한다.
 - 확인된 주요 서비스명:
   - HS 부호 조회: `hsSgnQry/searchHsSgn`
+  - 관세율 기본 조회: `trrfQry/retrieveTrrfInfo` (API 신청 필요, 응답 태그 미검증)
   - 관세환율 정보: `trifFxrtInfoQry/retrieveTrifFxrtInfo`
   - 통계부호: `statsSgnQry/retrieveStatsSgnBrkd`
   - 화물통관 진행: `cargCsclPrgsInfoQry/retrieveCargCsclPrgsInfo`
-- **관세율표(trrf) 와 품목분류 사례는 UNIPASS API 미제공** → CLIP 스크래퍼로 수집한다.
+- **품목분류 사례는 UNIPASS API 미제공** → CLIP 스크래퍼(`openULS0203042S.do`)로 수집한다.
+- **관세율표** 는 UNIPASS API(관세율기본조회) 와 CLIP 스크래퍼(`openULS0201002Q.do`) 두 경로 모두 검토 중.
 - 응답 XML 태그명은 로그인 후 연계가이드 PDF 에만 공개되므로, 신규 서비스 연동 시
   실 호출로 구조를 확인한 뒤 파서를 확정한다.
 

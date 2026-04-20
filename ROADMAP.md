@@ -10,8 +10,8 @@
 - [x] `CLAUDE.md` 작성 (UNIPASS 컨벤션, 브랜치 규칙)
 - [x] `requirements.txt` (requests, pandas, playwright)
 - [x] `scripts/__init__.py` 패키지화
-- [ ] `.env.example` 작성 (`UNIPASS_API_KEY`, `LOG_LEVEL` 등)
-- [ ] `.gitignore` 보강 (`.env`, `__pycache__/`, `data/raw/`, `reports/*.html`)
+- [x] `.env.example` 작성 (`UNIPASS_API_KEY`, `LOG_LEVEL` 등)
+- [x] `.gitignore` 보강 (`.env`, `__pycache__/`, `data/raw/`, `reports/*.html`)
 - [ ] `pyproject.toml` 또는 `setup.cfg` 로 lint/format 도구 통합 (ruff, black)
 
 ## Phase 1 — 데이터 수집부
@@ -21,6 +21,7 @@
 - [x] `search_hs_sgn()` — 엔드포인트 `hsSgnQry/searchHsSgn`
 - [x] 공식 엔드포인트 검증 (관세청 레퍼런스 코드)
 - [ ] **실제 API 키로 `search_hs_sgn()` 1회 호출 → XML 응답 태그명 확정**
+- [ ] `retrieve_trrf_info()` (관세율기본조회) 메서드 추가 — API 신청 후 응답 태그 검증 필요
 - [ ] `retrieve_trif_fxrt_info()` (관세환율) 메서드 추가
 - [ ] `retrieve_stats_sgn_brkd()` (통계부호) 메서드 추가
 - [ ] `retrieve_carg_cscl_prgs_info()` (화물통관 진행) 메서드 추가
@@ -87,7 +88,7 @@
 
 ## 결정 보류 항목 (TBD)
 
-- [ ] 관세율표 데이터 출처: CLIP 스크래퍼 vs 별도 PDF 파싱 vs 공공데이터포털
+- [ ] 관세율표 데이터 출처: UNIPASS 관세율기본조회 API vs CLIP 스크래퍼(`openULS0201002Q.do`) vs 공공데이터포털
 - [ ] HSK 버전 관리 정책 (2022 / 2017 등 멀티 버전 동시 보유 여부)
 - [ ] 사용자 인증·접근 제어 필요 여부
 - [ ] 다국어 응답 지원 범위 (국문 only vs 국문+영문)
