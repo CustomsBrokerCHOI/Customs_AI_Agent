@@ -10,6 +10,11 @@ from typing import Iterable, Mapping
 
 import pandas as pd
 
+try:
+    import tiktoken  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover
+    tiktoken = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_ITEM_MASTER = Path("data/item_master.csv")
@@ -17,6 +22,9 @@ ITEM_MASTER_COLUMNS = ["hs_code", "name_kr", "name_en", "base_rate", "source"]
 
 DEFAULT_CHUNK_TOKENS = 800
 DEFAULT_CHUNK_OVERLAP = 100
+DEFAULT_ENCODING = "cl100k_base"
+
+_ENCODER_CACHE: dict[str, object] = {}
 
 
 @dataclass
@@ -62,11 +70,13 @@ class DataManager:
         note: Mapping[str, object],
         chunk_tokens: int = DEFAULT_CHUNK_TOKENS,
         overlap_tokens: int = DEFAULT_CHUNK_OVERLAP,
+        encoding: str | None = DEFAULT_ENCODING,
     ) -> list[dict[str, object]]:
         """해설서 한 건을 부/류 주 + 본문으로 나누고 토큰 단위로 청킹.
 
-        토큰 카운트는 외부 의존을 피하기 위해 공백·문장부호 단위 근사값을 사용.
-        정확도가 필요하면 ``tiktoken`` 등으로 교체.
+        :param encoding: ``tiktoken`` BPE 인코딩명 (기본 ``cl100k_base``).
+            ``None`` 지정 시 공백 분리 근사치 사용. tiktoken 이 미설치이거나
+            실패하면 자동으로 공백 분리 fallback.
         """
         heading = str(note.get("heading", ""))
         metadata_base = dict(note.get("metadata") or {})
@@ -80,7 +90,9 @@ class DataManager:
 
         chunks: list[dict[str, object]] = []
         for kind, text in parts:
-            for idx, piece in enumerate(_split_with_overlap(text, chunk_tokens, overlap_tokens)):
+            for idx, piece in enumerate(
+                _split_with_overlap(text, chunk_tokens, overlap_tokens, encoding)
+            ):
                 chunks.append(
                     {
                         "text": f"[{heading}/{kind}] {piece}",
@@ -97,16 +109,61 @@ class DataManager:
 _TOKEN_PATTERN = re.compile(r"\S+")
 
 
-def _split_with_overlap(text: str, chunk_tokens: int, overlap_tokens: int) -> list[str]:
+def _get_encoder(name: str):
+    if tiktoken is None:
+        return None
+    if name not in _ENCODER_CACHE:
+        _ENCODER_CACHE[name] = tiktoken.get_encoding(name)
+    return _ENCODER_CACHE[name]
+
+
+def _split_with_overlap(
+    text: str,
+    chunk_tokens: int,
+    overlap_tokens: int,
+    encoding: str | None = DEFAULT_ENCODING,
+) -> list[str]:
     if chunk_tokens <= 0:
         raise ValueError("chunk_tokens 는 1 이상이어야 합니다.")
     if overlap_tokens < 0 or overlap_tokens >= chunk_tokens:
         raise ValueError("overlap_tokens 는 0 이상 chunk_tokens 미만이어야 합니다.")
 
+    if encoding:
+        try:
+            enc = _get_encoder(encoding)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("tiktoken 인코더 로드 실패(%s), 공백 분리 fallback: %s", encoding, exc)
+            enc = None
+        if enc is not None:
+            return _split_tokens_tiktoken(text, chunk_tokens, overlap_tokens, enc)
+
+    return _split_tokens_whitespace(text, chunk_tokens, overlap_tokens)
+
+
+def _split_tokens_tiktoken(
+    text: str, chunk_tokens: int, overlap_tokens: int, enc
+) -> list[str]:
+    ids = enc.encode(text)
+    if not ids:
+        return []
+    step = chunk_tokens - overlap_tokens
+    chunks: list[str] = []
+    for start in range(0, len(ids), step):
+        window = ids[start : start + chunk_tokens]
+        if not window:
+            break
+        chunks.append(enc.decode(window))
+        if start + chunk_tokens >= len(ids):
+            break
+    return chunks
+
+
+def _split_tokens_whitespace(
+    text: str, chunk_tokens: int, overlap_tokens: int
+) -> list[str]:
     tokens = _TOKEN_PATTERN.findall(text)
     if not tokens:
         return []
-
     step = chunk_tokens - overlap_tokens
     chunks: list[str] = []
     for start in range(0, len(tokens), step):

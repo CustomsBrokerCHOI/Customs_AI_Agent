@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://unipass.customs.go.kr"
 HS_MANUAL_PATH = "/clip/hsinfosrch/openULS0202001Q.do"
+TARIFF_SCHEDULE_PATH = "/clip/hsinfosrch/openULS0201002Q.do"
 DEFAULT_USER_AGENT = "CustomsAIAgent/0.1 (+contact: ops@example.com)"
 DEFAULT_TIMEOUT_MS = 20_000
 DEFAULT_RATE_LIMIT_SEC = 1.0
@@ -49,6 +50,10 @@ SEL_FORM_SUBMIT = "#searchVo button[type='submit']"
 SEL_RESULT_TABLE = "#ULS0202001Q_T1_table1"
 SEL_RESULT_DETAIL_LINK = "#ULS0202001Q_T1_table1 a.dtlInfo"
 SEL_DETAIL_LAYER = "#dtlLayer"
+
+SEL_TARIFF_INPUT = "#uniSrchText2"
+SEL_TARIFF_SUBMIT = "#btnHsSearch"
+SEL_TARIFF_RESULT = "#ULS0201005Q_TBL"
 
 TAB_SELECTORS: dict[str, tuple[str, str]] = {
     # 탭 id → (국문 pre 셀렉터, 영문 pre 셀렉터)
@@ -70,6 +75,24 @@ class BilingualText:
 
     def is_empty(self) -> bool:
         return not (self.ko or self.en)
+
+
+@dataclass
+class TariffLine:
+    """CLIP 관세율표 한 행 (10자리 세번)."""
+
+    heading: str
+    sub_heading: str
+    tariff_line: str
+    name_kr: str | None
+    name_en: str | None
+    base_rate: str | None
+    flex_rate_cls: str | None  # 탄력세율 구분 (예: C)
+    country_rate: str | None  # 한국 표준세율 혹은 비교국 협정세율
+
+    @property
+    def hs10(self) -> str:
+        return f"{self.heading}{self.sub_heading}{self.tariff_line}".replace(" ", "")
 
 
 @dataclass
@@ -202,6 +225,66 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
         year: str = "2022",
     ) -> list[ExplanatoryNote]:
         return [self.fetch_explanatory_note(h, year=year) for h in heading_nos]
+
+    def fetch_tariff_schedule(
+        self,
+        heading_no: str,
+        result_timeout_ms: int = 15_000,
+    ) -> list[TariffLine]:
+        """CLIP 관세율표 (`openULS0201002Q.do`) 에서 HS 4자리 기준 전체 세번 리스트 수집.
+
+        :param heading_no: 4자리 호 번호 (예: ``"8471"``). 10자리도 허용(상위 4자리만 사용).
+        :param result_timeout_ms: 검색 결과 테이블 렌더 대기 타임아웃.
+        :returns: 10자리 세번 단위 ``TariffLine`` 리스트.
+        """
+        if len(heading_no) < 4 or not heading_no[:4].isdigit():
+            raise ValueError(f"heading_no 의 앞 4자리는 숫자: {heading_no!r}")
+        heading_no = heading_no[:4]
+
+        page = self._require_page()
+        self._respect_rate_limit()
+
+        page.goto(
+            f"{self.base_url}{TARIFF_SCHEDULE_PATH}",
+            wait_until="domcontentloaded",
+        )
+        try:
+            page.wait_for_load_state("networkidle", timeout=self.timeout_ms)
+            page.fill(SEL_TARIFF_INPUT, heading_no)
+            page.click(SEL_TARIFF_SUBMIT)
+            page.wait_for_selector(f"{SEL_TARIFF_RESULT} tbody tr", timeout=result_timeout_ms)
+        except PlaywrightTimeoutError as exc:
+            raise ClipScrapeError(
+                f"관세율표 검색 실패 (heading={heading_no})"
+            ) from exc
+
+        raw = page.evaluate(
+            """(sel) => Array.from(document.querySelectorAll(sel + ' tbody tr'))
+                   .map(tr => Array.from(tr.cells).map(c => c.innerText.trim()))""",
+            SEL_TARIFF_RESULT,
+        )
+
+        lines: list[TariffLine] = []
+        for cells in raw:
+            # 관찰된 레이아웃: [호, 소호, 세번, 한글품명, 영문품명, 기본세율, 탄력구분, 협정세율]
+            if len(cells) < 5:
+                continue
+            cells = [c or None for c in cells]
+            lines.append(
+                TariffLine(
+                    heading=cells[0] or heading_no,
+                    sub_heading=(cells[1] or "") if len(cells) > 1 else "",
+                    tariff_line=(cells[2] or "") if len(cells) > 2 else "",
+                    name_kr=cells[3] if len(cells) > 3 else None,
+                    name_en=cells[4] if len(cells) > 4 else None,
+                    base_rate=cells[5] if len(cells) > 5 else None,
+                    flex_rate_cls=cells[6] if len(cells) > 6 else None,
+                    country_rate=cells[7] if len(cells) > 7 else None,
+                )
+            )
+
+        self._last_request_at = time.monotonic()
+        return lines
 
     def _submit_search(self, heading_no: str, year: str) -> None:
         page = self._require_page()
