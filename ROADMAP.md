@@ -116,9 +116,11 @@
 
 ### 4-A. FastAPI 백엔드
 - [x] 프로젝트 구조 `api/` (routers, services, schemas, db, core, alembic) + FastAPI 앱 + `/health` + Pydantic Settings (2026-04-21)
-- [ ] `POST /classify` — 단건 분류 요청 (비동기 잡 or 동기 응답)
-- [ ] `GET /classify/{id}` — 상태·결과 조회
-- [ ] `GET /hs/{hs_code}` — HS 부호 마스터 + 관세율 + 해설서 링크
+- [x] `POST /classify` — 비동기 잡 생성 (202 + job_id), BackgroundTasks 로 처리 (2026-04-21)
+- [x] `GET /classify/{id}` — 상태·결과 조회, 소유자 체크 (404 통일로 누출 방지)
+- [x] `POST /classify/{id}/review` — 관세사 확인/채택 (status=complete 만 허용)
+- [x] `GET /hs/{hs_code}` — HS 마스터 + 관세율 전체 (selectinload join, 인증 필요)
+- [~] ClassifyEngine 5단계 실구현 (Week 4-5) — 현재 stub 은 mock 결과 2초 후 반환
 - [x] 인증 (JWT HttpOnly cookie + access/refresh, bcrypt) — `api/core/security.py`, `api/routers/auth.py`, `api/deps.py`. 엔드포인트: `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me` (2026-04-21)
 - [ ] Rate limit · 감사 로그
 - [ ] OpenAPI 스키마 자동 생성
