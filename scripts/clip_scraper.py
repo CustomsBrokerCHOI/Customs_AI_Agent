@@ -17,12 +17,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from types import TracebackType
-from typing import Iterable
+from typing import Any, Iterable
 
 from playwright.sync_api import (
     Browser,
@@ -38,6 +41,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://unipass.customs.go.kr"
 HS_MANUAL_PATH = "/clip/hsinfosrch/openULS0202001Q.do"
 TARIFF_SCHEDULE_PATH = "/clip/hsinfosrch/openULS0201002Q.do"
+CLASSIFICATION_CASE_PATH = "/clip/hsinfosrch/openULS0203042S.do"
 DEFAULT_USER_AGENT = "CustomsAIAgent/0.1 (+contact: ops@example.com)"
 DEFAULT_TIMEOUT_MS = 20_000
 DEFAULT_RATE_LIMIT_SEC = 1.0
@@ -55,6 +59,15 @@ SEL_TARIFF_INPUT = "#uniSrchText2"
 SEL_TARIFF_SUBMIT = "#btnHsSearch"
 SEL_TARIFF_RESULT = "#ULS0201005Q_TBL"
 
+# 품목분류 사례 (openULS0203042S). 실측 전 잠정값이며 dev_probe_cases.py --headed 로
+# 실제 DOM 확인 후 확정한다. 검색창은 '품목명/HS부호' 공용 입력으로 관찰되어 단일 셀렉터.
+SEL_CASE_INPUT = "#srchText"
+SEL_CASE_SUBMIT = "#btnSearch"
+SEL_CASE_RESULT = "#ULS0203042S_T1_table1"
+SEL_CASE_DETAIL_LINK = "#ULS0203042S_T1_table1 a.dtlInfo"
+SEL_CASE_DETAIL_LAYER = "#dtlLayer"
+SEL_CASE_PAGINATION_NEXT = "a.paging.next"
+
 TAB_SELECTORS: dict[str, tuple[str, str]] = {
     # 탭 id → (국문 pre 셀렉터, 영문 pre 셀렉터)
     "general_rule": ("#divLft_tab1 pre", "#divRght_tab1 pre"),
@@ -66,6 +79,14 @@ TAB_SELECTORS: dict[str, tuple[str, str]] = {
 
 class ClipScrapeError(RuntimeError):
     """CLIP 스크래핑 실패."""
+
+
+def _slug(text: str) -> str:
+    """파일 저장용 안전한 slug. ASCII·한글만 남기고 공백→_, 길이 30자 제한."""
+    safe = "".join(
+        ch if (ch.isalnum() or "\uac00" <= ch <= "\ud7a3") else "_" for ch in text.strip()
+    )
+    return (safe or "query")[:30]
 
 
 @dataclass
@@ -93,6 +114,32 @@ class TariffLine:
     @property
     def hs10(self) -> str:
         return f"{self.heading}{self.sub_heading}{self.tariff_line}".replace(" ", "")
+
+
+@dataclass
+class ClassificationCase:
+    """품목분류 사례 한 건 (openULS0203042S)."""
+
+    case_ref: str | None
+    product_name: str
+    hs_code: str | None = None
+    decision_date: str | None = None
+    description: str | None = None
+    reasoning: str | None = None
+    source_url: str | None = None
+    metadata: dict[str, str] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "case_ref": self.case_ref,
+            "product_name": self.product_name,
+            "hs_code": self.hs_code,
+            "decision_date": self.decision_date,
+            "description": self.description,
+            "reasoning": self.reasoning,
+            "source_url": self.source_url,
+            "metadata": dict(self.metadata),
+        }
 
 
 @dataclass
@@ -136,6 +183,8 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
         rate_limit_sec: float = DEFAULT_RATE_LIMIT_SEC,
         headless: bool = True,
         storage_state: str | None = None,
+        raw_html_dir: str | Path | None = None,
+        manifest_path: str | Path | None = None,
     ) -> None:
         self.base_url = base_url
         self.user_agent = user_agent
@@ -143,6 +192,8 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
         self.rate_limit_sec = rate_limit_sec
         self.headless = headless
         self.storage_state = storage_state
+        self.raw_html_dir = Path(raw_html_dir) if raw_html_dir else None
+        self.manifest_path = Path(manifest_path) if manifest_path else None
 
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
@@ -197,6 +248,10 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
         self._submit_search(heading_no=heading_no, year=year)
         self._open_detail()
 
+        html_path = self._persist_raw_html(
+            subdir="notes", stem=f"{heading_no}_{year}"
+        )
+
         note = ExplanatoryNote(
             heading=heading_no,
             year=year,
@@ -206,6 +261,8 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
                 "manl_orgn": "WCO",
             },
         )
+        if html_path is not None:
+            note.metadata["raw_html_path"] = str(html_path)
         for attr, (ko_sel, en_sel) in TAB_SELECTORS.items():
             setattr(
                 note,
@@ -215,6 +272,16 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
                     en=self._text_or_none(en_sel),
                 ),
             )
+
+        self._append_manifest(
+            {
+                "kind": "explanatory_note",
+                "heading": heading_no,
+                "year": year,
+                "url": page.url,
+                "raw_html_path": str(html_path) if html_path else None,
+            }
+        )
 
         self._last_request_at = time.monotonic()
         return note
@@ -258,6 +325,8 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
                 f"관세율표 검색 실패 (heading={heading_no})"
             ) from exc
 
+        html_path = self._persist_raw_html(subdir="tariffs", stem=heading_no)
+
         raw = page.evaluate(
             """(sel) => Array.from(document.querySelectorAll(sel + ' tbody tr'))
                    .map(tr => Array.from(tr.cells).map(c => c.innerText.trim()))""",
@@ -283,8 +352,169 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
                 )
             )
 
+        self._append_manifest(
+            {
+                "kind": "tariff_schedule",
+                "heading": heading_no,
+                "url": page.url,
+                "raw_html_path": str(html_path) if html_path else None,
+                "rows": len(lines),
+            }
+        )
+
         self._last_request_at = time.monotonic()
         return lines
+
+    def fetch_classification_cases(
+        self,
+        query: str,
+        max_pages: int = 3,
+        fetch_detail: bool = True,
+        result_timeout_ms: int = 15_000,
+    ) -> list[ClassificationCase]:
+        """품목분류 사례 검색 (`openULS0203042S.do`).
+
+        검색창에 품목명·HS 부호 등을 입력하면 사례 목록이 표로 출력된다.
+        ``fetch_detail=True`` 인 경우 각 행을 클릭하여 결정 이유 등 상세 내용까지 수집.
+
+        .. warning::
+            셀렉터(``SEL_CASE_*``)는 잠정값. 최초 실행 시
+            ``python -m scripts.dev_probe_cases --headed`` 로 실제 DOM 을 확인하고
+            필요 시 상수를 갱신할 것. 리스트 컬럼 배치도 가정(사례번호/품명/HS/결정일)이며
+            실제 사이트에 맞춰 ``_parse_case_row`` 매핑을 조정해야 한다.
+        """
+        if not query.strip():
+            raise ValueError("query 가 비어있을 수 없습니다.")
+
+        page = self._require_page()
+        self._respect_rate_limit()
+
+        page.goto(
+            f"{self.base_url}{CLASSIFICATION_CASE_PATH}",
+            wait_until="domcontentloaded",
+        )
+        try:
+            page.wait_for_selector(SEL_CASE_INPUT, timeout=self.timeout_ms)
+            page.fill(SEL_CASE_INPUT, query)
+            page.click(SEL_CASE_SUBMIT)
+            page.wait_for_selector(
+                f"{SEL_CASE_RESULT} tbody tr", timeout=result_timeout_ms
+            )
+        except PlaywrightTimeoutError as exc:
+            raise ClipScrapeError(
+                f"품목분류 사례 검색 실패 (query={query!r})"
+            ) from exc
+
+        cases: list[ClassificationCase] = []
+        for page_idx in range(max_pages):
+            stem = f"case_search_{_slug(query)}_p{page_idx + 1}"
+            html_path = self._persist_raw_html(subdir="cases", stem=stem)
+            rows = page.evaluate(
+                """(sel) => Array.from(document.querySelectorAll(sel + ' tbody tr'))
+                       .map(tr => Array.from(tr.cells).map(c => c.innerText.trim()))""",
+                SEL_CASE_RESULT,
+            )
+            for cells in rows:
+                case = self._parse_case_row(cells, source_url=page.url)
+                if case is None:
+                    continue
+                if fetch_detail:
+                    try:
+                        self._enrich_case_detail(case, row_cells=cells)
+                    except PlaywrightTimeoutError:
+                        logger.warning(
+                            "사례 상세 펼침 실패 (case_ref=%s)", case.case_ref
+                        )
+                cases.append(case)
+
+            self._append_manifest(
+                {
+                    "kind": "classification_cases",
+                    "query": query,
+                    "page": page_idx + 1,
+                    "url": page.url,
+                    "raw_html_path": str(html_path) if html_path else None,
+                    "rows": len(rows),
+                }
+            )
+
+            if page_idx + 1 >= max_pages:
+                break
+            if not self._goto_next_case_page():
+                break
+
+        self._last_request_at = time.monotonic()
+        return cases
+
+    def _parse_case_row(
+        self, cells: list[str], source_url: str
+    ) -> ClassificationCase | None:
+        """사례 테이블 한 행을 ``ClassificationCase`` 로 매핑.
+
+        잠정 가정: ``[사례번호, 품명, HS부호(10자리), 결정일, 요약]``.
+        실측 후 cells 매핑을 수정하라.
+        """
+        cells = [c.strip() if isinstance(c, str) else "" for c in cells]
+        non_empty = [c for c in cells if c]
+        if not non_empty:
+            return None
+        case_ref = cells[0] if len(cells) > 0 else None
+        product_name = cells[1] if len(cells) > 1 else non_empty[0]
+        hs_code = cells[2] if len(cells) > 2 else None
+        decision_date = cells[3] if len(cells) > 3 else None
+        description = cells[4] if len(cells) > 4 else None
+        if hs_code:
+            hs_code = hs_code.replace("-", "").replace(".", "").replace(" ", "")
+            if not (hs_code.isdigit() and len(hs_code) == 10):
+                hs_code = None
+        return ClassificationCase(
+            case_ref=case_ref or None,
+            product_name=product_name or "",
+            hs_code=hs_code,
+            decision_date=decision_date or None,
+            description=description or None,
+            source_url=source_url,
+        )
+
+    def _enrich_case_detail(
+        self, case: ClassificationCase, row_cells: list[str]
+    ) -> None:
+        """사례 상세 레이어 를 펼쳐 결정 이유 등 텍스트 추출."""
+        page = self._require_page()
+        # 행 클릭: 일반적으로 사례번호 링크
+        ref = case.case_ref or (row_cells[0] if row_cells else "")
+        if not ref:
+            return
+        link = page.query_selector(f"{SEL_CASE_DETAIL_LINK}:has-text(\"{ref}\")")
+        if link is None:
+            # fallback: 첫 dtlInfo 링크
+            link = page.query_selector(SEL_CASE_DETAIL_LINK)
+        if link is None:
+            return
+        link.click()
+        page.wait_for_selector(SEL_CASE_DETAIL_LAYER, timeout=self.timeout_ms)
+        reasoning = self._text_or_none(SEL_CASE_DETAIL_LAYER)
+        if reasoning:
+            case.reasoning = reasoning
+        # 닫기(다음 행 클릭 가능하도록). 실측 후 정확한 닫기 셀렉터로 교체.
+        close_btn = page.query_selector(f"{SEL_CASE_DETAIL_LAYER} .btnClose")
+        if close_btn:
+            close_btn.click()
+
+    def _goto_next_case_page(self) -> bool:
+        """다음 페이지 링크가 있으면 클릭하고 True, 없으면 False."""
+        page = self._require_page()
+        next_link = page.query_selector(SEL_CASE_PAGINATION_NEXT)
+        if next_link is None:
+            return False
+        try:
+            next_link.click()
+            page.wait_for_selector(
+                f"{SEL_CASE_RESULT} tbody tr", timeout=self.timeout_ms
+            )
+        except PlaywrightTimeoutError:
+            return False
+        return True
 
     def _submit_search(self, heading_no: str, year: str) -> None:
         page = self._require_page()
@@ -329,3 +559,33 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
         elapsed = time.monotonic() - self._last_request_at
         if elapsed < self.rate_limit_sec:
             time.sleep(self.rate_limit_sec - elapsed)
+
+    def _persist_raw_html(self, subdir: str, stem: str) -> Path | None:
+        """raw_html_dir 가 설정된 경우 현재 페이지 HTML 을 저장하고 경로 반환."""
+        if self.raw_html_dir is None:
+            return None
+        page = self._require_page()
+        target_dir = self.raw_html_dir / subdir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"{stem}.html"
+        try:
+            path.write_text(page.content(), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            logger.exception("raw HTML 저장 실패: %s", path)
+            return None
+        return path
+
+    def _append_manifest(self, record: dict[str, Any]) -> None:
+        """manifest_path 가 설정된 경우 수집 메타 한 줄(jsonl) append."""
+        if self.manifest_path is None:
+            return
+        enriched = {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            **record,
+        }
+        self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with self.manifest_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(enriched, ensure_ascii=False) + "\n")
+        except Exception:  # noqa: BLE001
+            logger.exception("manifest.jsonl 기록 실패: %s", self.manifest_path)
