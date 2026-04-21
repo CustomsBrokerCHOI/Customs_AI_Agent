@@ -16,6 +16,7 @@ build/
 # 수집 원본 데이터 (대용량)
 data/raw/
 data/cache/
+data/usage/
 
 # 생성 리포트 (HTML)
 reports/*.html
