@@ -65,8 +65,8 @@
 
 ## Phase 2 — RAG 전처리 (pgvector 기반)
 
-- [ ] PostgreSQL + pgvector 로컬/도커 환경 구축
-- [ ] 스키마 설계 (`hs_codes`, `explanatory_notes`, `tariff_schedules`, `classification_cases`, `embeddings`)
+- [ ] PostgreSQL + pgvector 로컬/도커 환경 구축 (문서 기재, 실행은 사용자)
+- [x] 스키마 설계 — 9 테이블 `api/db/models.py` + Alembic 초기 마이그레이션 `api/alembic/versions/20260421_0001_*.py` (users/audit_logs/hs_codes/tariff_rates/explanatory_notes/note_chunks/classification_cases/classify_jobs/embedding_versions, HNSW cosine 인덱스 2개) (2026-04-21)
 - [ ] 청크 메타 스키마 확정 (heading, kind, hsk_version, lang, chunk_index, source)
 - [ ] 임베딩 모델 선정 (`bge-m3-ko` 또는 `text-embedding-3-large`). 한국어 품명·해설서 성능 기준.
 - [ ] 임베딩 파이프라인 (`scripts/build_index.py`) — CLIP 청크 + 품목분류 사례 + HS 품명 적재
@@ -115,7 +115,7 @@
 ## Phase 4 — API + UI
 
 ### 4-A. FastAPI 백엔드
-- [ ] 프로젝트 구조 `api/` (routers, services, schemas, db)
+- [x] 프로젝트 구조 `api/` (routers, services, schemas, db, core, alembic) + FastAPI 앱 + `/health` + Pydantic Settings (2026-04-21)
 - [ ] `POST /classify` — 단건 분류 요청 (비동기 잡 or 동기 응답)
 - [ ] `GET /classify/{id}` — 상태·결과 조회
 - [ ] `GET /hs/{hs_code}` — HS 부호 마스터 + 관세율 + 해설서 링크
