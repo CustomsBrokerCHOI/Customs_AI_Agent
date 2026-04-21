@@ -31,6 +31,46 @@ _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # ---------- 비밀번호 ----------
 
 
+PASSWORD_MIN_LEN = 10
+PASSWORD_MAX_LEN = 128
+PASSWORD_MIN_CHAR_CLASSES = 2  # 소문자/대문자/숫자/특수문자 중 2개 이상
+
+
+def validate_password_strength(password: str) -> None:
+    """비밀번호 정책 검증. 실패 시 ``ValueError``.
+
+    정책:
+    - 길이 ``PASSWORD_MIN_LEN`` ~ ``PASSWORD_MAX_LEN``
+    - 소문자 / 대문자 / 숫자 / 특수문자 4개 클래스 중 **최소 2개** 포함
+    - 공백 문자 전체만으로 구성되지 않음
+    """
+    if password is None:
+        raise ValueError("비밀번호가 비어있습니다.")
+    if len(password) < PASSWORD_MIN_LEN:
+        raise ValueError(f"비밀번호는 {PASSWORD_MIN_LEN}자 이상이어야 합니다.")
+    if len(password) > PASSWORD_MAX_LEN:
+        raise ValueError(f"비밀번호는 {PASSWORD_MAX_LEN}자 이하여야 합니다.")
+    if not password.strip():
+        raise ValueError("공백만으로 된 비밀번호는 허용되지 않습니다.")
+
+    classes = 0
+    if any(c.islower() for c in password):
+        classes += 1
+    if any(c.isupper() for c in password):
+        classes += 1
+    if any(c.isdigit() for c in password):
+        classes += 1
+    # 특수문자: 알파벳·숫자·공백이 아닌 문자
+    if any(not c.isalnum() and not c.isspace() for c in password):
+        classes += 1
+
+    if classes < PASSWORD_MIN_CHAR_CLASSES:
+        raise ValueError(
+            f"비밀번호는 소문자/대문자/숫자/특수문자 중 최소 "
+            f"{PASSWORD_MIN_CHAR_CLASSES} 종류를 포함해야 합니다."
+        )
+
+
 def hash_password(password: str) -> str:
     return _pwd_context.hash(password)
 

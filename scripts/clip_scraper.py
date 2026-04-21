@@ -42,6 +42,7 @@ DEFAULT_BASE_URL = "https://unipass.customs.go.kr"
 HS_MANUAL_PATH = "/clip/hsinfosrch/openULS0202001Q.do"
 TARIFF_SCHEDULE_PATH = "/clip/hsinfosrch/openULS0201002Q.do"
 CLASSIFICATION_CASE_PATH = "/clip/hsinfosrch/openULS0203042S.do"
+FAQ_PATH = "/clip/hsinfosrch/openULS0206017Q.do"
 DEFAULT_USER_AGENT = "CustomsAIAgent/0.1 (+contact: ops@example.com)"
 DEFAULT_TIMEOUT_MS = 20_000
 DEFAULT_RATE_LIMIT_SEC = 1.0
@@ -67,6 +68,15 @@ SEL_CASE_RESULT = "#ULS0203042S_T1_table1"
 SEL_CASE_DETAIL_LINK = "#ULS0203042S_T1_table1 a.dtlInfo"
 SEL_CASE_DETAIL_LAYER = "#dtlLayer"
 SEL_CASE_PAGINATION_NEXT = "a.paging.next"
+
+# FAQ (openULS0206017Q). 실측 전 잠정값. dev_probe_faq.py --headed 로
+# 확인 후 ``_parse_faq_row`` 매핑과 함께 갱신.
+SEL_FAQ_INPUT = "#srchText"
+SEL_FAQ_SUBMIT = "#btnSearch"
+SEL_FAQ_RESULT = "#ULS0206017Q_T1_table1"
+SEL_FAQ_DETAIL_LINK = "#ULS0206017Q_T1_table1 a.dtlInfo"
+SEL_FAQ_DETAIL_LAYER = "#dtlLayer"
+SEL_FAQ_PAGINATION_NEXT = "a.paging.next"
 
 TAB_SELECTORS: dict[str, tuple[str, str]] = {
     # 탭 id → (국문 pre 셀렉터, 영문 pre 셀렉터)
@@ -137,6 +147,38 @@ class ClassificationCase:
             "decision_date": self.decision_date,
             "description": self.description,
             "reasoning": self.reasoning,
+            "source_url": self.source_url,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass
+class FAQEntry:
+    """CLIP FAQ 한 건 (openULS0206017Q).
+
+    .. warning::
+        필드 매핑(``question``/``answer``/``category``)은 실제 사이트 DOM
+        확인 전 잠정값. ``dev_probe_faq.py --headed`` 로 구조 확정 후 ``_parse_faq_row``
+        를 갱신할 것.
+    """
+
+    faq_id: str | None
+    question: str
+    category: str | None = None
+    answer: str | None = None
+    hs_code: str | None = None
+    decision_date: str | None = None
+    source_url: str | None = None
+    metadata: dict[str, str] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "faq_id": self.faq_id,
+            "question": self.question,
+            "category": self.category,
+            "answer": self.answer,
+            "hs_code": self.hs_code,
+            "decision_date": self.decision_date,
             "source_url": self.source_url,
             "metadata": dict(self.metadata),
         }
@@ -516,6 +558,172 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
             return False
         return True
 
+    # ---- FAQ (openULS0206017Q) ----
+
+    def fetch_faq(
+        self,
+        query: str,
+        max_pages: int = 3,
+        fetch_detail: bool = True,
+        result_timeout_ms: int = 15_000,
+    ) -> list[FAQEntry]:
+        """CLIP FAQ 검색 (``openULS0206017Q.do``).
+
+        분류/원산지/관세 등 Q&A 소스. 품목분류 보조 데이터로 활용.
+
+        .. warning::
+            셀렉터(``SEL_FAQ_*``)는 실측 전 잠정값. 최초 실행 시
+            ``python -m scripts.dev_probe_faq --headed`` 로 실제 DOM 을 확인하고
+            필요 시 상수 및 ``_parse_faq_row`` 매핑을 갱신할 것.
+            컬럼 배치 가정: ``[FAQ번호, 분류, 질문요약, 등록일]``.
+        """
+        if not query.strip():
+            raise ValueError("query 가 비어있을 수 없습니다.")
+
+        page = self._require_page()
+        self._respect_rate_limit()
+
+        page.goto(
+            f"{self.base_url}{FAQ_PATH}",
+            wait_until="domcontentloaded",
+        )
+        try:
+            page.wait_for_selector(SEL_FAQ_INPUT, timeout=self.timeout_ms)
+            page.fill(SEL_FAQ_INPUT, query)
+            page.click(SEL_FAQ_SUBMIT)
+            page.wait_for_selector(
+                f"{SEL_FAQ_RESULT} tbody tr", timeout=result_timeout_ms
+            )
+        except PlaywrightTimeoutError as exc:
+            raise ClipScrapeError(
+                f"FAQ 검색 실패 (query={query!r})"
+            ) from exc
+
+        entries: list[FAQEntry] = []
+        for page_idx in range(max_pages):
+            stem = f"faq_search_{_slug(query)}_p{page_idx + 1}"
+            html_path = self._persist_raw_html(subdir="faq", stem=stem)
+            rows = page.evaluate(
+                """(sel) => Array.from(document.querySelectorAll(sel + ' tbody tr'))
+                       .map(tr => Array.from(tr.cells).map(c => c.innerText.trim()))""",
+                SEL_FAQ_RESULT,
+            )
+            for cells in rows:
+                entry = self._parse_faq_row(cells, source_url=page.url)
+                if entry is None:
+                    continue
+                if fetch_detail:
+                    try:
+                        self._enrich_faq_detail(entry, row_cells=cells)
+                    except PlaywrightTimeoutError:
+                        logger.warning(
+                            "FAQ 상세 펼침 실패 (faq_id=%s)", entry.faq_id
+                        )
+                entries.append(entry)
+
+            self._append_manifest(
+                {
+                    "kind": "faq",
+                    "query": query,
+                    "page": page_idx + 1,
+                    "url": page.url,
+                    "raw_html_path": str(html_path) if html_path else None,
+                    "rows": len(rows),
+                }
+            )
+
+            if page_idx + 1 >= max_pages:
+                break
+            if not self._goto_next_faq_page():
+                break
+
+        self._last_request_at = time.monotonic()
+        return entries
+
+    def _parse_faq_row(
+        self, cells: list[str], source_url: str
+    ) -> FAQEntry | None:
+        """FAQ 테이블 한 행을 ``FAQEntry`` 로 매핑.
+
+        잠정 가정: ``[FAQ번호, 분류, 질문요약, 등록일]``.
+        실측 후 cells 매핑을 수정하라.
+        """
+        cells = [c.strip() if isinstance(c, str) else "" for c in cells]
+        non_empty = [c for c in cells if c]
+        if not non_empty:
+            return None
+        faq_id = cells[0] if len(cells) > 0 else None
+        category = cells[1] if len(cells) > 1 else None
+        question = cells[2] if len(cells) > 2 else non_empty[0]
+        decision_date = cells[3] if len(cells) > 3 else None
+        return FAQEntry(
+            faq_id=faq_id or None,
+            question=question or "",
+            category=category or None,
+            decision_date=decision_date or None,
+            source_url=source_url,
+        )
+
+    def _enrich_faq_detail(
+        self, entry: FAQEntry, row_cells: list[str]
+    ) -> None:
+        """FAQ 상세 레이어 펼쳐 답변 텍스트 추출."""
+        page = self._require_page()
+        ref = entry.faq_id or (row_cells[0] if row_cells else "")
+        if not ref:
+            return
+        link = page.query_selector(f"{SEL_FAQ_DETAIL_LINK}:has-text(\"{ref}\")")
+        if link is None:
+            link = page.query_selector(SEL_FAQ_DETAIL_LINK)
+        if link is None:
+            return
+        link.click()
+        page.wait_for_selector(SEL_FAQ_DETAIL_LAYER, timeout=self.timeout_ms)
+        answer = self._text_or_none(SEL_FAQ_DETAIL_LAYER)
+        if answer:
+            entry.answer = answer
+
+    def _goto_next_faq_page(self) -> bool:
+        page = self._require_page()
+        next_link = page.query_selector(SEL_FAQ_PAGINATION_NEXT)
+        if next_link is None:
+            return False
+        try:
+            next_link.click()
+            page.wait_for_selector(
+                f"{SEL_FAQ_RESULT} tbody tr", timeout=self.timeout_ms
+            )
+        except PlaywrightTimeoutError:
+            return False
+        return True
+
+    # ---- HSK 버전 감지 ----
+
+    def list_available_hsk_years(self) -> list[int]:
+        """해설서 페이지의 HSK 연도 드롭다운에서 선택 가능한 연도 목록.
+
+        5년 주기 HS 개정 감지에 사용 — 새 연도가 등장하면 재임베딩 파이프라인을
+        가동해야 한다 (docs/hsk-version-migration.md 참조).
+
+        :returns: 오름차순 정렬된 연도 리스트. 페이지 로딩 실패 시 빈 리스트.
+        """
+        page = self._require_page()
+        self._respect_rate_limit()
+        try:
+            page.goto(f"{self.base_url}{HS_MANUAL_PATH}", wait_until="domcontentloaded")
+            page.wait_for_selector(SEL_YEAR_SELECT, timeout=self.timeout_ms)
+        except PlaywrightTimeoutError:
+            logger.warning("HSK 연도 드롭다운 로딩 실패")
+            return []
+        # 드롭다운 option value 들을 JS 로 일괄 수집.
+        values = page.evaluate(
+            """(sel) => Array.from(document.querySelectorAll(sel + ' option'))
+                   .map(o => (o.value || o.textContent || '').trim())""",
+            SEL_YEAR_SELECT,
+        )
+        self._last_request_at = time.monotonic()
+        return _parse_year_options(values)
+
     def _submit_search(self, heading_no: str, year: str) -> None:
         page = self._require_page()
         try:
@@ -560,6 +768,59 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
         if elapsed < self.rate_limit_sec:
             time.sleep(self.rate_limit_sec - elapsed)
 
+    # ---- 재시도 (지수 백오프) ----
+
+    # 재시도 대상 예외: Playwright Timeout 및 기타 네트워크 transient.
+    # ``ClipScrapeError`` 는 우리가 의도적으로 올리는 업무 오류라 재시도 대상 제외.
+    _TRANSIENT_EXC: tuple[type[BaseException], ...] = (PlaywrightTimeoutError,)
+
+    def _retry_transient(
+        self,
+        fn,
+        *,
+        kind: str,
+        max_attempts: int = 3,
+        base_delay: float = 2.0,
+        context: dict[str, Any] | None = None,
+    ):
+        """``fn()`` 을 지수 백오프 재시도. transient 실패에만 적용.
+
+        :param kind: 로깅·manifest 식별자 (예: ``explanatory_note``).
+        :param context: manifest 에 실릴 부가 정보 (heading/year 등).
+        :raises: 최종 시도도 실패하면 마지막 예외를 그대로 재발생.
+        """
+        last_exc: BaseException | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return fn()
+            except self._TRANSIENT_EXC as exc:
+                last_exc = exc
+                if attempt >= max_attempts:
+                    break
+                wait = base_delay ** (attempt - 1) * self.rate_limit_sec
+                logger.warning(
+                    "[%s] transient 실패 attempt=%d/%d: %s (sleep %.1fs)",
+                    kind,
+                    attempt,
+                    max_attempts,
+                    exc,
+                    wait,
+                )
+                time.sleep(wait)
+        # 모든 재시도 소진 → 실패 매니페스트 + 재발생
+        self._append_manifest(
+            {
+                "event": "failure",
+                "kind": kind,
+                "error_type": type(last_exc).__name__ if last_exc else "Unknown",
+                "error": str(last_exc)[:300] if last_exc else "",
+                "attempts": max_attempts,
+                **(context or {}),
+            }
+        )
+        assert last_exc is not None  # for mypy
+        raise last_exc
+
     def _persist_raw_html(self, subdir: str, stem: str) -> Path | None:
         """raw_html_dir 가 설정된 경우 현재 페이지 HTML 을 저장하고 경로 반환."""
         if self.raw_html_dir is None:
@@ -576,11 +837,16 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
         return path
 
     def _append_manifest(self, record: dict[str, Any]) -> None:
-        """manifest_path 가 설정된 경우 수집 메타 한 줄(jsonl) append."""
+        """manifest_path 가 설정된 경우 수집 메타 한 줄(jsonl) append.
+
+        ``record`` 에 ``event`` 키가 없으면 ``"success"`` 로 기본 채움 (하위 호환).
+        실패 기록은 ``event: "failure"`` + ``error``/``error_type``/``attempts`` 포함.
+        """
         if self.manifest_path is None:
             return
         enriched = {
             "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "event": record.get("event", "success"),
             **record,
         }
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -589,3 +855,25 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
                 f.write(json.dumps(enriched, ensure_ascii=False) + "\n")
         except Exception:  # noqa: BLE001
             logger.exception("manifest.jsonl 기록 실패: %s", self.manifest_path)
+
+
+# ---- 모듈 수준 헬퍼 ----
+
+
+def _parse_year_options(raw: list[str]) -> list[int]:
+    """drop-down option 문자열 목록 → 유효한 4자리 연도 정수 오름차순.
+
+    ``ClipScraper.list_available_hsk_years`` 와 테스트 양쪽에서 사용.
+    """
+    years: set[int] = set()
+    for v in raw:
+        digits = "".join(ch for ch in (v or "") if ch.isdigit())
+        if len(digits) < 4:
+            continue
+        try:
+            y = int(digits[:4])
+        except ValueError:
+            continue
+        if 1990 <= y <= 2100:
+            years.add(y)
+    return sorted(years)

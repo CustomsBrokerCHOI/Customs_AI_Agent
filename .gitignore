@@ -18,6 +18,10 @@ data/raw/
 data/cache/
 data/usage/
 
+# 평가셋 산출물 (빌드로 재생성 가능 + 수기 라벨은 민감 가능)
+data/eval_set.jsonl
+data/eval_manual.jsonl
+
 # 생성 리포트 (HTML)
 reports/*.html
 reports/**/*.html

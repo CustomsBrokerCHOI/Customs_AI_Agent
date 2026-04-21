@@ -1,0 +1,30 @@
+# Railway 배포 설정 (API 서비스).
+# Postgres 는 Railway 플러그인(Database → PostgreSQL)으로 별도 프로비저닝.
+# 자세한 절차는 docs/deploy.md.
+
+[build]
+# Nixpacks 자동 감지. requirements.txt 기반. PDF 렌더용 weasyprint 시스템 의존 포함.
+builder = "NIXPACKS"
+buildCommand = "pip install -r requirements.txt -r api/requirements.txt"
+# weasyprint 가 필요한 네이티브 라이브러리 (Cairo, Pango, GDK-PixBuf)
+nixpacksPlan = { providers = ["python"], phases = { setup = { aptPkgs = ["libpango-1.0-0", "libpangoft2-1.0-0", "libcairo2"] } } }
+
+[deploy]
+# 배포 직전 Alembic 마이그레이션 자동 수행.
+startCommand = "alembic -c api/alembic.ini upgrade head && uvicorn api.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+
+# 참고: 환경변수는 Railway Project Variables 에 설정.
+# 필수:
+#   DATABASE_URL     (Railway Postgres 플러그인 자동 주입 — 단 postgresql:// → postgresql+asyncpg:// 로 치환 필요)
+#   JWT_SECRET       (32+ bytes random)
+#   ANTHROPIC_API_KEY
+#   OPENAI_API_KEY
+#   UNIPASS_API_KEY (및 서비스별)
+# 권장:
+#   ENV=production   (secure cookie 활성)
+#   LOG_LEVEL=INFO
+#   RATE_LIMIT_PER_DAY=100

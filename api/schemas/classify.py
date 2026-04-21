@@ -29,16 +29,17 @@ class Candidate(BaseModel):
     """Top-3 중 하나."""
 
     rank: int
-    hs_code: str
-    name_kr: str | None
-    name_en: str | None
+    hs_code: str | None = None  # 10자리 대표값 (heading-level 후보는 None 가능)
+    name_kr: str | None = None
+    name_en: str | None = None
     heading: str  # 4자리
-    sub_heading: str  # 2자리
-    breadcrumb: list[str]  # 부→류→호→세번 각 단계 라벨
+    sub_heading: str = ""  # 2자리 (hs_code 있을 때만)
+    breadcrumb: list[str] = []  # 부→류→호→세번 각 단계 라벨
     confidence: float = Field(ge=0.0, le=1.0)
     base_tariff_rate: str | None = None  # FTA 'A' 세율
-    verified: bool  # RAG 검증 성공 여부 (partial result 대응)
-    citations: list[Citation]
+    verified: bool  # RAG Deep Verify 결과 verdict=='match' 여부
+    verdict: str = "unverified"  # match / mismatch / uncertain / unverified
+    citations: list[Citation] = []
 
 
 class ClassifyResult(BaseModel):
@@ -63,6 +64,20 @@ class JobStatusResponse(BaseModel):
     description: str
     result: ClassifyResult | None = None
     error_message: str | None = None
+    reviewed: bool
+    accepted_hs_code: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class JobSummary(BaseModel):
+    """GET /classify 리스트 응답 (상세 result 제외 경량 버전)."""
+
+    id: uuid.UUID
+    status: str
+    product_name: str
     reviewed: bool
     accepted_hs_code: str | None = None
     created_at: datetime

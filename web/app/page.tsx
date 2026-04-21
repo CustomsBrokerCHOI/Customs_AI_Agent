@@ -13,22 +13,16 @@ export default function DashboardPage() {
           title="새 분류 요청"
           description="품명·설명·사진으로 HS CODE 초안 생성"
           href="/classify/new"
-          disabled
-          badge="Week 3"
         />
         <Card
           title="분류 히스토리"
           description="내 분류 잡 상태 · 결과 · 관세사 확인 여부"
           href="/classify"
-          disabled
-          badge="Week 3"
         />
         <Card
           title="HS 마스터 조회"
           description="10자리 HS 부호로 품명·세율·적용기간 조회"
           href="/hs"
-          disabled
-          badge="Week 3"
         />
       </div>
     </section>

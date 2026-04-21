@@ -1,8 +1,11 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
+import { ApiError, login } from "@/lib/api";
 
 export default function LoginPage() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
@@ -13,9 +16,15 @@ export default function LoginPage() {
     setPending(true);
     setError(null);
     try {
-      // 실제 연동은 Week 3 에서 /auth/login 호출 (JWT HttpOnly cookie).
-      await new Promise((r) => setTimeout(r, 400));
-      setError("아직 로그인이 구현되지 않았습니다 (Week 3 연동 예정).");
+      await login({ email, password });
+      router.push("/");
+      router.refresh();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : "로그인 실패");
+      }
     } finally {
       setPending(false);
     }
@@ -37,6 +46,7 @@ export default function LoginPage() {
             onChange={(e) => setEmail(e.target.value)}
             className="w-full rounded border px-3 py-2 outline-none focus:border-neutral-500"
             placeholder="you@firm.co.kr"
+            autoComplete="email"
           />
         </label>
         <label className="block text-sm">
@@ -47,6 +57,7 @@ export default function LoginPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             className="w-full rounded border px-3 py-2 outline-none focus:border-neutral-500"
+            autoComplete="current-password"
           />
         </label>
         {error ? <p className="text-sm text-red-600">{error}</p> : null}

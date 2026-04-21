@@ -5,13 +5,25 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from api.core.security import (
+    PASSWORD_MAX_LEN,
+    PASSWORD_MIN_LEN,
+    validate_password_strength,
+)
 
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=10, max_length=128)
+    password: str = Field(min_length=PASSWORD_MIN_LEN, max_length=PASSWORD_MAX_LEN)
     name: str | None = Field(None, max_length=100)
+
+    @field_validator("password")
+    @classmethod
+    def _check_strength(cls, v: str) -> str:
+        validate_password_strength(v)
+        return v
 
 
 class LoginRequest(BaseModel):
