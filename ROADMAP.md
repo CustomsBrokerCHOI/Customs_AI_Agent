@@ -119,7 +119,7 @@
 - [ ] `POST /classify` — 단건 분류 요청 (비동기 잡 or 동기 응답)
 - [ ] `GET /classify/{id}` — 상태·결과 조회
 - [ ] `GET /hs/{hs_code}` — HS 부호 마스터 + 관세율 + 해설서 링크
-- [ ] 인증 (JWT 세션, 관세사 계정)
+- [x] 인증 (JWT HttpOnly cookie + access/refresh, bcrypt) — `api/core/security.py`, `api/routers/auth.py`, `api/deps.py`. 엔드포인트: `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me` (2026-04-21)
 - [ ] Rate limit · 감사 로그
 - [ ] OpenAPI 스키마 자동 생성
 

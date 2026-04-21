@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from api.core.config import settings
-from api.routers import health
+from api.routers import auth, health
 
 logging.basicConfig(
     level=settings.log_level,
@@ -40,6 +40,7 @@ app = FastAPI(
 )
 
 app.include_router(health.router)
+app.include_router(auth.router)
 
 
 @app.get("/")
