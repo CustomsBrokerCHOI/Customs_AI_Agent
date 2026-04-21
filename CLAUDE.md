@@ -28,7 +28,7 @@ HS CODE 자동 품목분류 SaaS. 관세사의 분류 의사결정을 보조하�
 - `prompts/` — LLM 프롬프트 템플릿 (5단계 분류 알고리즘의 단계별 프롬프트).
 - `scripts/` — Python 모듈 (API 클라이언트, ETL, 데이터 적재, 분류 엔진).
 - `tests/` — pytest 단위 테스트.
-- `api/` — (계획) FastAPI 서버 (분류 엔드포인트).
+- `api/` — FastAPI 서버 (분류 엔드포인트). `api/main.py` 진입점, `api/db/models.py` 9 테이블 ORM, `api/core/config.py` Pydantic Settings.
 - `web/` — (계획) Next.js 프런트엔드.
 - `reports/` — 로컬 분석 산출물 (개발용).
 
@@ -51,6 +51,40 @@ HS CODE 자동 품목분류 SaaS. 관세사의 분류 의사결정을 보조하�
 - **관세율표**: UNIPASS `retrieve_trrt` 를 주 소스로 사용. CLIP `fetch_tariff_schedule` (`openULS0201002Q.do`) 는 표준화된 품명·탄력세율 구분을 위한 보조 소스.
 - 응답 XML 태그명은 로그인 후 연계가이드 PDF 에만 공개되므로, 신규 서비스 연동 시
   실 호출로 구조를 확인한 뒤 파서를 확정한다.
+
+## 실행법
+
+**백엔드 (FastAPI)**:
+```bash
+# 1. PostgreSQL + pgvector 로컬 (Docker)
+docker run -d --name customs-pg \
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=customs \
+  -p 5432:5432 pgvector/pgvector:pg16
+
+# 2. 의존성
+pip install -r api/requirements.txt
+
+# 3. .env 세팅 (.env.example 복사 후 값 채움)
+
+# 4. Alembic 마이그레이션 (도입 후)
+alembic -c api/alembic.ini upgrade head
+
+# 5. 개발 서버
+uvicorn api.main:app --reload
+# → http://localhost:8000/docs
+```
+
+**ETL 스크립트 (scripts/)**:
+```bash
+pip install -r requirements.txt
+python -m scripts.build_item_master 8471300000 2203000000
+python -m scripts.dev_probe trrtQry retrieveTrrt --param hsSgn=8471300000
+```
+
+**테스트**:
+```bash
+python -m pytest tests/ -v
+```
 
 ## Conventions
 
