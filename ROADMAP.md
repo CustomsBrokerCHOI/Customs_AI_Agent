@@ -48,7 +48,7 @@
 - [x] `fetch_explanatory_note()` — 통칙/부/류/호 × 국문/영문 수집
 - [x] 실제 호 1건 수집 → DataFrame 저장까지 end-to-end 통합 테스트 (2026-04-21, heading 8471 year 2022, 4탭×2언어 수집, 9 청크). `scripts/dev_probe_clip.py`.
 - [x] **관세율표** 스크래퍼 추가 (`openULS0201002Q.do`) — `ClipScraper.fetch_tariff_schedule()` + `TariffLine` dataclass (2026-04-21). HS 8471 기준 34개 세번 추출 검증. UNIPASS `retrieve_trrt` 와 데이터 일부 중복이나 표준화된 품명·탄력세율 구분 제공.
-- [ ] **품목분류 사례** 스크래퍼 추가 (`openULS0203042S.do`) — PRD 핵심 데이터. 분류 알고리즘 2단계(검색) 입력.
+- [x] **품목분류 사례** 스크래퍼 추가 (`openULS0203042S.do`) — `ClipScraper.fetch_classification_cases(query, max_pages, fetch_detail)` + `ClassificationCase` dataclass (case_ref/product_name/hs_code/decision_date/description/reasoning/source_url) + `_parse_case_row`/`_enrich_case_detail`/`_goto_next_case_page`. `scripts/dev_probe_cases.py` 로 실측 전 DOM 확인. **셀렉터(`SEL_CASE_*`)는 잠정값** — 실사이트 접근 후 `_parse_case_row` 매핑 확정 필요 (2026-04-22)
 - [-] ~~외국 분류 사례 (미국/EU/일본 등) 수집~~ — PRD 범위 제외
 - [-] ~~WCO 영문 해설서 별도 수집~~ — CLIP 해설서의 영문 필드로 대체
 - [x] FAQ (`openULS0206017Q.do`) 수집 스크래퍼 — `ClipScraper.fetch_faq(query, max_pages, fetch_detail)` + `FAQEntry` dataclass (faq_id/question/category/answer/hs_code/decision_date) + `_parse_faq_row`/`_enrich_faq_detail`/`_goto_next_faq_page`. `scripts/dev_probe_faq.py` 로 실측 전 DOM 확인. **셀렉터(`SEL_FAQ_*`)는 잠정값** — 실사이트 접근 후 `_parse_faq_row` 매핑 확정 필요 (2026-04-22)
@@ -60,14 +60,15 @@
 - [x] `DataManager.chunk_explanatory_note()` — 토큰 단위 슬라이딩 윈도우
 - [x] `scripts/build_item_master.py` — UNIPASS `search_hs_sgn` → `item_master.csv` E2E 파이프라인 (2026-04-21). HS 한·영 이중 호출, FTA 'A' 기본세율 추출, dedupe 업서트.
 - [x] `tiktoken` 기반 정확한 토큰 카운팅으로 교체 (2026-04-21, `cl100k_base` 기본, 미설치/실패 시 공백 fallback). 실측: 한국어 해설서에서 공백 방식 9 청크 → tiktoken 40 청크 (평균 901자).
-- [ ] 해설서 raw HTML 보관 (`data/raw/clip/<heading>.html`) — 재처리용
-- [ ] 수집 메타 로그 (`data/manifest.jsonl`) — 호별 수집 일시, 버전, 청크 수
+- [x] RAG 인덱스 적재 ETL — `scripts/build_index.py` 3 서브커맨드: ① `hs-codes` (item_master.csv → `hs_codes` + FTA=A `tariff_rates`) ② `notes` (CLIP 해설서 JSON → `explanatory_notes` + `note_chunks`, `--replace-chunks` 옵션) ③ `cases` (CLIP 품목분류 사례 JSONL → `classification_cases`, 미적재 HS FK 는 NULL 로 강등, `case_ref` 기반 on_conflict_do_update). 25 단위 테스트 (date 파서 / HS 정규화 / FK null-out / on_conflict 경로 / 잘못된 라인 skip) (2026-04-22)
+- [x] 해설서·관세율표·사례·FAQ raw HTML 보관 (`data/raw/clip/<subdir>/<stem>.html`) — `ClipScraper._persist_raw_html(subdir, stem)` 훅이 4 종 스크래퍼(notes/tariffs/cases/faq) 에서 공통 사용. `raw_html_dir=` 미지정 시 no-op (2026-04-22)
+- [x] 수집 메타 로그 (`data/manifest.jsonl`) — `_append_manifest()` 가 스크래퍼 단위로 `{kind, heading/query, url, raw_html_path, rows/chunks, event: success|failure}` JSONL 한 줄씩 append. `manifest_path=` 미지정 시 no-op (2026-04-22)
 
 ## Phase 2 — RAG 전처리 (pgvector 기반)
 
 - [ ] PostgreSQL + pgvector 로컬/도커 환경 구축 (문서 기재, 실행은 사용자)
 - [x] 스키마 설계 — 9 테이블 `api/db/models.py` + Alembic 초기 마이그레이션 `api/alembic/versions/20260421_0001_*.py` (users/audit_logs/hs_codes/tariff_rates/explanatory_notes/note_chunks/classification_cases/classify_jobs/embedding_versions, HNSW cosine 인덱스 2개) (2026-04-21)
-- [ ] 청크 메타 스키마 확정 (heading, kind, hsk_version, lang, chunk_index, source)
+- [x] 청크 메타 스키마 확정 (`heading, kind, lang, hsk_year, source`) — `scripts/build_index.py::upsert_notes_from_json` 이 `DataManager.chunk_explanatory_note` 출력의 `metadata` 를 `NoteChunk.metadata_` JSON 컬럼에 적재. `chunk_index` 는 별도 정수 컬럼 (2026-04-22)
 - [x] **임베딩 모델 선정** → `text-embedding-3-large` + `dimensions=1536` (Matryoshka 압축) (2026-04-21). 스키마 `Vector(1536)` 와 정확히 부합, 한국어 벤치마크 상위, OpenAI SDK 재사용.
 - [x] **bge-m3-ko 비교 벤치마크 툴** → `scripts/compare_embeddings.py` (2026-04-21). `OpenAIBackend` + `BgeM3Backend` 추상화, brute-force in-memory cosine (numpy) 로 HNSW 제외하고 모델 품질만 비교. `sentence-transformers` 옵션 의존. 실측 실행은 CLIP 사례 DB 적재 + 임베딩 파이프라인 실행 이후.
 - [x] 임베딩 파이프라인 (`scripts/build_embeddings.py`, 2026-04-21) — `note_chunks` / `classification_cases` 대상, `EmbeddingVersion` 버전 관리, `--dry-run` 비용 견적 + 확인 프롬프트, 배치당 commit (부분 진행 보존), 지수 백오프 3회.

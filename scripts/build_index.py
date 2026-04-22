@@ -1,18 +1,20 @@
 """RAG 인덱스 적재 ETL (Phase 2, 임베딩 전 단계).
 
-두 가지 서브커맨드 제공.
+세 가지 서브커맨드 제공.
 
 1. ``hs-codes`` — ``data/item_master.csv`` → ``hs_codes`` (+ ``tariff_rates`` FTA=A)
 2. ``notes`` — ``scripts.dev_probe_clip`` 가 생성한 해설서 JSON → ``explanatory_notes`` + ``note_chunks``
+3. ``cases`` — ``scripts.dev_probe_cases`` 가 생성한 JSONL → ``classification_cases``
 
-임베딩(``NoteChunk.embedding``)은 이 단계에서 ``NULL`` 로 남긴다.
-다음 스프린트의 임베딩 파이프라인이 값을 채운다.
+임베딩(``NoteChunk.embedding`` / ``ClassificationCase.embedding``)은 이 단계에서
+``NULL`` 로 남긴다. 다음 스프린트의 임베딩 파이프라인이 값을 채운다.
 
 사용 예::
 
     python -m scripts.build_index hs-codes --csv data/item_master.csv
     python -m scripts.build_index notes data/cache/clip_note_8471_2022_*.json
     python -m scripts.build_index notes data/cache/clip_note_8471_2022.json --replace-chunks
+    python -m scripts.build_index cases data/cache/clip_cases_*.jsonl
 
 DB 연결은 ``.env`` 의 ``DATABASE_URL`` 을 사용. ``+asyncpg`` 드라이버는 자동으로
 ``+psycopg`` (sync) 로 변환된다.
@@ -26,6 +28,7 @@ import io
 import json
 import logging
 import sys
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -36,7 +39,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from api.core.config import settings
-from api.db.models import ExplanatoryNote, HSCode, NoteChunk, TariffRate
+from api.db.models import (
+    ClassificationCase,
+    ExplanatoryNote,
+    HSCode,
+    NoteChunk,
+    TariffRate,
+)
 from scripts.data_manager import DataManager
 
 logger = logging.getLogger(__name__)
@@ -265,6 +274,113 @@ def _nn(v: Any) -> str | None:
     return s or None
 
 
+def _parse_decision_date(v: Any) -> date | None:
+    """문자열 날짜를 ``date`` 로 파싱. 파싱 실패 시 ``None``.
+
+    CLIP 사이트는 ``YYYY-MM-DD`` / ``YYYY.MM.DD`` / ``YYYY/MM/DD`` / ``YYYYMMDD``
+    등 다양한 표기를 쓰므로 관용적 파서를 사용한다.
+    """
+    if not v:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize_hs(v: Any) -> str | None:
+    """HS 후보 문자열을 10자리 숫자만 남겨서 반환. 아니면 ``None``."""
+    if not v:
+        return None
+    s = str(v).strip().replace("-", "").replace(".", "").replace(" ", "")
+    if len(s) == 10 and s.isdigit():
+        return s
+    return None
+
+
+def upsert_cases_from_jsonl(
+    session: Session, jsonl_path: Path
+) -> tuple[int, int, int]:
+    """``dev_probe_cases`` JSONL → ``classification_cases``.
+
+    - ``hs_code`` 가 ``hs_codes`` 에 없으면 FK 오류 방지로 ``NULL`` 로 강등.
+      (분류 사례 데이터는 HS 가 아직 적재 안 된 호도 포함할 수 있음.)
+    - ``case_ref`` 가 있으면 ``on_conflict_do_update`` 로 업서트.
+      없으면 unique 대상이 없어 매 실행마다 중복이 쌓일 수 있다(재실행 시 주의).
+    - 빈 ``product_name`` 행은 건너뛴다.
+
+    :returns: ``(inserted_or_updated, hs_code_nulled, total_rows)``
+    """
+    existing_hs: set[str] = {
+        row[0] for row in session.execute(select(HSCode.hs_code)).all()
+    }
+
+    inserted = 0
+    hs_nulled = 0
+    total = 0
+
+    with jsonl_path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            total += 1
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("JSONL 파싱 실패: %s", line[:120])
+                continue
+
+            product_name = str(rec.get("product_name") or "").strip()
+            if not product_name:
+                logger.info("product_name 없음 → 건너뜀 (case_ref=%r)", rec.get("case_ref"))
+                continue
+
+            hs_code = _normalize_hs(rec.get("hs_code"))
+            if hs_code and hs_code not in existing_hs:
+                logger.info(
+                    "hs_code %s 가 hs_codes 에 없음 → NULL 로 강등 (case_ref=%r)",
+                    hs_code,
+                    rec.get("case_ref"),
+                )
+                hs_code = None
+                hs_nulled += 1
+
+            case_ref = _nn(rec.get("case_ref"))
+            row: dict[str, Any] = {
+                "hs_code": hs_code,
+                "case_ref": case_ref,
+                "product_name": product_name,
+                "description": _nn(rec.get("description")),
+                "reasoning": _nn(rec.get("reasoning")),
+                "decision_date": _parse_decision_date(rec.get("decision_date")),
+                "source_url": _nn(rec.get("source_url")),
+            }
+
+            stmt = pg_insert(ClassificationCase).values(row)
+            if case_ref:
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=[ClassificationCase.case_ref],
+                    set_={
+                        "hs_code": stmt.excluded.hs_code,
+                        "product_name": stmt.excluded.product_name,
+                        "description": stmt.excluded.description,
+                        "reasoning": stmt.excluded.reasoning,
+                        "decision_date": stmt.excluded.decision_date,
+                        "source_url": stmt.excluded.source_url,
+                    },
+                )
+            session.execute(stmt)
+            inserted += 1
+
+    return inserted, hs_nulled, total
+
+
 def _expand_paths(patterns: Iterable[str]) -> list[Path]:
     out: list[Path] = []
     for pat in patterns:
@@ -303,6 +419,9 @@ def main() -> int:
         help="기존 note_chunks 삭제 후 재삽입 (chunking 파라미터 변경 시)",
     )
 
+    p_cases = sub.add_parser("cases", help="CLIP 품목분류 사례 JSONL → classification_cases")
+    p_cases.add_argument("paths", nargs="+", help="dev_probe_cases JSONL 파일 또는 glob")
+
     args = parser.parse_args()
 
     engine = create_engine(_sync_db_url(settings.database_url), pool_pre_ping=True)
@@ -331,6 +450,24 @@ def main() -> int:
                 print(f"[NOTE] {p.name}: notes={n}, chunks={c}")
             session.commit()
             print(f"[TOTAL] notes={total_notes}, chunks={total_chunks}")
+        elif args.cmd == "cases":
+            paths = _expand_paths(args.paths)
+            if not paths:
+                print("[ERROR] 처리할 JSONL 없음", file=sys.stderr)
+                return 2
+            total_cases = total_nulled = total_rows = 0
+            for p in paths:
+                n, nulled, rows = upsert_cases_from_jsonl(session, p)
+                total_cases += n
+                total_nulled += nulled
+                total_rows += rows
+                print(
+                    f"[CASE] {p.name}: upserted={n}, hs_nulled={nulled}, rows={rows}"
+                )
+            session.commit()
+            print(
+                f"[TOTAL] cases={total_cases}, hs_nulled={total_nulled}, rows={total_rows}"
+            )
         else:  # pragma: no cover
             parser.error(f"unknown cmd: {args.cmd}")
 
