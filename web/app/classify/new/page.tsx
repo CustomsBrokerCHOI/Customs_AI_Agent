@@ -4,11 +4,17 @@ import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { ApiError, createClassifyJob } from "@/lib/api";
 
+const MIN_CONF_LO = 31;
+const MIN_CONF_HI = 69;
+
 export default function NewClassifyPage() {
   const router = useRouter();
   const [productName, setProductName] = useState("");
   const [description, setDescription] = useState("");
   const [imageUrl, setImageUrl] = useState("");
+  const [forceClassify, setForceClassify] = useState(false);
+  // "" 은 미지정 → 백엔드 기본값(30%). 숫자 문자열이면 parseInt.
+  const [minConfidenceStr, setMinConfidenceStr] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -16,11 +22,26 @@ export default function NewClassifyPage() {
     e.preventDefault();
     setPending(true);
     setError(null);
+
+    // 클라이언트 측 1차 검증 — 백엔드 가 422 로도 잡지만 UX 상 먼저 안내
+    let minConf: number | undefined;
+    if (minConfidenceStr.trim() !== "") {
+      const n = parseInt(minConfidenceStr, 10);
+      if (Number.isNaN(n) || n < MIN_CONF_LO || n > MIN_CONF_HI) {
+        setError(`최소 신뢰도는 ${MIN_CONF_LO}~${MIN_CONF_HI} 사이여야 합니다.`);
+        setPending(false);
+        return;
+      }
+      minConf = n;
+    }
+
     try {
       const res = await createClassifyJob({
         product_name: productName.trim(),
         description: description.trim(),
         image_url: imageUrl.trim() ? imageUrl.trim() : undefined,
+        force_classify: forceClassify || undefined,
+        min_confidence_pct: minConf,
       });
       router.push(`/classify/${res.job_id}`);
     } catch (err) {
@@ -98,6 +119,46 @@ export default function NewClassifyPage() {
             Claude Vision 으로 재질·형태 보조 판독. HTTPS URL 권장.
           </p>
         </label>
+
+        <div className="rounded border border-neutral-200 bg-neutral-50 p-3 space-y-3">
+          <p className="text-xs font-medium text-neutral-700">고급 옵션</p>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={forceClassify}
+              onChange={(e) => setForceClassify(e.target.checked)}
+              className="mt-1"
+            />
+            <span>
+              <span className="font-medium text-neutral-800">
+                정보 부족 시에도 경합 후보 제시
+              </span>
+              <span className="ml-1 text-xs text-neutral-500">
+                (force_classify) Input Gate 가 추가 질문을 내도 원본 정보만으로 최대 5개 후보 반환
+              </span>
+            </span>
+          </label>
+
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-neutral-800">
+              최소 신뢰도 (%)
+              <span className="ml-1 text-xs text-neutral-500">
+                비우면 기본 30%. 허용 {MIN_CONF_LO}~{MIN_CONF_HI}
+              </span>
+            </span>
+            <input
+              type="number"
+              min={MIN_CONF_LO}
+              max={MIN_CONF_HI}
+              step={1}
+              value={minConfidenceStr}
+              onChange={(e) => setMinConfidenceStr(e.target.value)}
+              placeholder="예: 50"
+              className="w-32 rounded border px-3 py-1.5 text-sm outline-none focus:border-neutral-500"
+            />
+          </label>
+        </div>
 
         {error ? (
           <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">

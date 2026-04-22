@@ -13,6 +13,7 @@ from api.services.input_gate import (
     MAX_NAME_CHARS,
     TOOL_NAME,
     ProductFeatures,
+    _coerce_tool_input,
     _pick_tool_use,
     build_messages,
     extract_features,
@@ -268,3 +269,138 @@ async def test_extract_features_passes_image_url_to_messages() -> None:
     first_block = kwargs["messages"][0]["content"][0]
     assert first_block["type"] == "image"
     assert first_block["source"]["url"] == "https://img/test.jpg"
+
+
+# ---- _coerce_tool_input (Claude 스키마 편차 복구) ----
+
+
+def test_coerce_key_specifications_stringified_json_to_dict() -> None:
+    """Claude 가 key_specifications 를 JSON 문자열로 반환한 경우 dict 로 복구."""
+    raw = {
+        "product_name_normalized": "x",
+        "materials": ["a"],
+        "functions": ["f"],
+        "confidence": 0.7,
+        "follow_up_questions": [],
+        "key_specifications": '{"용량": "500ml", "포장": "유리병"}',
+    }
+    out = _coerce_tool_input(raw)
+    assert out["key_specifications"] == {"용량": "500ml", "포장": "유리병"}
+
+
+def test_coerce_key_specifications_unparseable_falls_back_to_empty_dict() -> None:
+    raw = {
+        "product_name_normalized": "x",
+        "materials": [],
+        "functions": [],
+        "confidence": 0.5,
+        "follow_up_questions": [],
+        "key_specifications": "not-json 텍스트",
+    }
+    out = _coerce_tool_input(raw)
+    assert out["key_specifications"] == {}
+
+
+def test_coerce_list_fields_string_wrapped_in_list() -> None:
+    """materials 등이 문자열로 들어오면 1-원소 리스트로 감싼다."""
+    raw = {
+        "product_name_normalized": "x",
+        "materials": "알루미늄",
+        "functions": '["연산", "표시"]',  # JSON stringified
+        "follow_up_questions": "원산지?",
+        "confidence": 0.8,
+    }
+    out = _coerce_tool_input(raw)
+    assert out["materials"] == ["알루미늄"]
+    assert out["functions"] == ["연산", "표시"]
+    assert out["follow_up_questions"] == ["원산지?"]
+
+
+def test_coerce_empty_strings_on_optional_fields_become_none() -> None:
+    raw = {
+        "product_name_normalized": "x",
+        "materials": [],
+        "functions": [],
+        "confidence": 0.6,
+        "follow_up_questions": [],
+        "primary_use": "",
+        "manufacturing_method": "",
+        "form_factor": "",
+    }
+    out = _coerce_tool_input(raw)
+    assert out["primary_use"] is None
+    assert out["manufacturing_method"] is None
+    assert out["form_factor"] is None
+
+
+def test_coerce_expected_headings_keeps_only_4digit_numeric() -> None:
+    """expected_headings 는 4자리 숫자만 통과. 형식 이상치는 drop."""
+    raw = {
+        "product_name_normalized": "x",
+        "materials": [], "functions": [], "confidence": 0.5,
+        "follow_up_questions": [],
+        "expected_headings": ["3304", "3304.99", "abc", "33", "12345", "8471"],
+    }
+    out = _coerce_tool_input(raw)
+    # "3304.99" → digit 만 추출 후 앞 4자리 = "3304"
+    # "33" → 2자리, drop
+    # "abc" → 0자리, drop
+    # "12345" → 앞 4자리 = "1234"
+    assert out["expected_headings"] == ["3304", "3304", "1234", "8471"]
+
+
+def test_coerce_expected_chapter_numbers_validates_range() -> None:
+    """expected_chapter_numbers 는 1~99 int 만."""
+    raw = {
+        "product_name_normalized": "x",
+        "materials": [], "functions": [], "confidence": 0.5,
+        "follow_up_questions": [],
+        "expected_chapter_numbers": [33, "84", 0, 100, "abc", 1, 99],
+    }
+    out = _coerce_tool_input(raw)
+    assert out["expected_chapter_numbers"] == [33, 84, 1, 99]
+
+
+def test_coerce_classification_reasoning_empty_to_none() -> None:
+    raw = {
+        "product_name_normalized": "x",
+        "materials": [], "functions": [], "confidence": 0.5,
+        "follow_up_questions": [],
+        "classification_reasoning": "",
+    }
+    out = _coerce_tool_input(raw)
+    assert out["classification_reasoning"] is None
+
+
+def test_coerce_preserves_normal_dict_input() -> None:
+    """정상 응답은 그대로 통과."""
+    raw = {
+        "product_name_normalized": "x",
+        "materials": ["a"],
+        "functions": ["f"],
+        "key_specifications": {"kg": "1.24"},
+        "confidence": 0.9,
+        "follow_up_questions": [],
+    }
+    out = _coerce_tool_input(raw)
+    assert out["key_specifications"] == {"kg": "1.24"}
+    assert out["materials"] == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_extract_features_recovers_from_stringified_key_specs() -> None:
+    """회귀 테스트: Claude 가 key_specifications 를 stringify 해도 ValidationError 안 남."""
+    tool_input = {
+        "product_name_normalized": "데미그라스 소스",
+        "materials": ["쇠고기 육수", "양파"],
+        "functions": ["조리용 소스"],
+        "confidence": 0.8,
+        "follow_up_questions": ["원산지?"],
+        "key_specifications": '{"용량": "500ml", "포장": "병"}',
+    }
+    client = AsyncMock()
+    client.messages.create = AsyncMock(return_value=_make_response(tool_input))
+
+    result = await extract_features("데미그라스 소스", "프랑스식 갈색 소스", client=client)
+    assert result.features.key_specifications == {"용량": "500ml", "포장": "병"}
+    assert result.needs_more_info is True

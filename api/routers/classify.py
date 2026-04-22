@@ -87,6 +87,8 @@ async def _run_classify_job(job_id: uuid.UUID) -> None:
                 description=job.description,
                 image_url=job.image_url,
                 hsk_year=job.hsk_year,
+                force_classify=job.force_classify,
+                min_confidence_pct=job.min_confidence_pct,
             )
             if _use_real_engine():
                 logger.info("Job %s: using real engine", job_id)
@@ -156,6 +158,8 @@ async def create_classify_job(
         description=payload.description,
         image_url=payload.image_url,
         status="pending",
+        force_classify=payload.force_classify,
+        min_confidence_pct=payload.min_confidence_pct,
     )
     db.add(job)
     await db.flush()  # job.id 확보
@@ -170,6 +174,8 @@ async def create_classify_job(
             metadata={
                 "product_name": truncate_meta_text(payload.product_name),
                 "used_today": used_today + 1,
+                "force_classify": bool(payload.force_classify),
+                "min_confidence_pct": payload.min_confidence_pct,
             },
             ip_address=get_client_ip(request),
         )

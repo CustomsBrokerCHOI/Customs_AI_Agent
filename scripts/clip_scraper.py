@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://unipass.customs.go.kr"
 HS_MANUAL_PATH = "/clip/hsinfosrch/openULS0202001Q.do"
 TARIFF_SCHEDULE_PATH = "/clip/hsinfosrch/openULS0201002Q.do"
-CLASSIFICATION_CASE_PATH = "/clip/hsinfosrch/openULS0203042S.do"
+CLASSIFICATION_CASE_PATH = "/clip/prlstclsfsrch/openULS0203001S.do"
 FAQ_PATH = "/clip/hsinfosrch/openULS0206017Q.do"
 DEFAULT_USER_AGENT = "CustomsAIAgent/0.1 (+contact: ops@example.com)"
 DEFAULT_TIMEOUT_MS = 20_000
@@ -61,12 +61,15 @@ SEL_TARIFF_INPUT = "#uniSrchText2"
 SEL_TARIFF_SUBMIT = "#btnHsSearch"
 SEL_TARIFF_RESULT = "#ULS0201005Q_TBL"
 
-# 품목분류 사례 (openULS0203042S). 실측 전 잠정값이며 dev_probe_cases.py --headed 로
-# 실제 DOM 확인 후 확정한다. 검색창은 '품목명/HS부호' 공용 입력으로 관찰되어 단일 셀렉터.
-SEL_CASE_INPUT = "#srchText"
-SEL_CASE_SUBMIT = "#btnSearch"
-SEL_CASE_RESULT = "#ULS0203042S_T1_table1"
-SEL_CASE_DETAIL_LINK = "#ULS0203042S_T1_table1 a.dtlInfo"
+# 품목분류 사례 (openULS0203001S). 2026-04-23 실측 확정.
+# 실 페이지: https://unipass.customs.go.kr/clip/prlstclsfsrch/openULS0203001S.do
+# 컬럼 순서: [시행기관, 시행일자, 결정세번, 품명]. 검색 input 은 여러 개(참조번호/세번/품명/
+# 설명/결정사유/검색어)로 분리되어 있으며, 가장 범용은 통합 "검색어"(srchSrwr).
+# case_ref(참조번호) 는 리스트에 없고 상세 레이어에서 추출.
+SEL_CASE_INPUT = "#srchSrwr"
+SEL_CASE_SUBMIT = "#iSrchCond button[type='submit']"
+SEL_CASE_RESULT = "#ULS0203001S_T1_table1"
+SEL_CASE_DETAIL_LINK = "#ULS0203001S_T1_table1 a.dtlInfo"
 SEL_CASE_DETAIL_LAYER = "#dtlLayer"
 SEL_CASE_PAGINATION_NEXT = "a.paging.next"
 
@@ -482,29 +485,30 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
     def _parse_case_row(self, cells: list[str], source_url: str) -> ClassificationCase | None:
         """사례 테이블 한 행을 ``ClassificationCase`` 로 매핑.
 
-        잠정 가정: ``[사례번호, 품명, HS부호(10자리), 결정일, 요약]``.
-        실측 후 cells 매핑을 수정하라.
+        2026-04-23 실측 컬럼 순서: ``[시행기관, 시행일자, 결정세번, 품명]``.
+        참조번호(case_ref) 는 리스트에 없고 상세 레이어에서 채워진다 (_enrich_case_detail).
         """
         cells = [c.strip() if isinstance(c, str) else "" for c in cells]
         non_empty = [c for c in cells if c]
         if not non_empty:
             return None
-        case_ref = cells[0] if len(cells) > 0 else None
-        product_name = cells[1] if len(cells) > 1 else non_empty[0]
+        enforcement_agency = cells[0] if len(cells) > 0 else None
+        decision_date = cells[1] if len(cells) > 1 else None
         hs_code = cells[2] if len(cells) > 2 else None
-        decision_date = cells[3] if len(cells) > 3 else None
-        description = cells[4] if len(cells) > 4 else None
+        product_name = cells[3] if len(cells) > 3 else non_empty[-1]
         if hs_code:
             hs_code = hs_code.replace("-", "").replace(".", "").replace(" ", "")
             if not (hs_code.isdigit() and len(hs_code) == 10):
                 hs_code = None
+        metadata = {"enforcement_agency": enforcement_agency} if enforcement_agency else {}
         return ClassificationCase(
-            case_ref=case_ref or None,
+            case_ref=None,  # 상세 레이어에서 채움
             product_name=product_name or "",
             hs_code=hs_code,
             decision_date=decision_date or None,
-            description=description or None,
+            description=None,
             source_url=source_url,
+            metadata=metadata,
         )
 
     def _enrich_case_detail(self, case: ClassificationCase, row_cells: list[str]) -> None:

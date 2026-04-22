@@ -14,6 +14,13 @@ class ClassifyRequest(BaseModel):
     product_name: str = Field(min_length=1, max_length=500)
     description: str = Field(min_length=1, max_length=5000)
     image_url: str | None = Field(None, max_length=500)
+    # 관세사가 Input Gate 후속 질문을 "모른다/넘어간다" 로 판단한 경우 True.
+    # 엔진은 원본 입력만으로 경합 후보 최대 5개 + 근거를 반환한다.
+    force_classify: bool = False
+    # 후보 제시 최소 신뢰도(정수 %). 미지정 시 엔진 기본값(30%) 사용.
+    # 허용 범위는 31~69 (경계 30·70 제외): 30% 이하는 근거가 너무 약해 혼란만 주고,
+    # 70% 이상은 거의 모든 후보가 탈락해 빈 결과가 양산되기 때문.
+    min_confidence_pct: int | None = Field(None, gt=30, lt=70)
 
 
 class Citation(BaseModel):
@@ -45,6 +52,9 @@ class Candidate(BaseModel):
 class ClassifyResult(BaseModel):
     candidates: list[Candidate]
     notice: str | None = None  # 예: "분류 불확실 — 관세사 검토 요청"
+    # 엔진 메타: stages / usage / follow_up_questions / force_classify / top_n 등.
+    # 구조가 유연하므로 dict 로 패스쓰루 (UI 는 TypeScript EngineMeta 로 해석).
+    meta: dict | None = None
 
 
 class JobCreateResponse(BaseModel):

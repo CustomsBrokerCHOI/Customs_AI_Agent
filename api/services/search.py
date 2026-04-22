@@ -45,6 +45,10 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 1024
 DEFAULT_TOP_K = settings.top_k_candidates
 CASE_SCORE_WEIGHT = 0.85  # case 거리에 곱해 "부스트" (거리 감소 = 점수 증가)
+# Input Gate 힌트 매치에 따른 score 승수. 해설서 substring 검증이 후단에서 걸러주므로
+# 공격적으로 부스트해도 오분류로 직결되지 않는다.
+HINT_HEADING_BOOST = 1.30
+HINT_CHAPTER_BOOST = 1.10
 
 TOOL_NAME_SECTION = "propose_sections"
 
@@ -317,13 +321,44 @@ def search_cases(
 
 
 def _load_hs_master_for_headings(session: Session, headings: list[str]) -> dict[str, HSCode]:
-    """heading → 대표 HSCode (첫 hs_code) dict."""
+    """heading → 대표 HSCode dict.
+
+    대표 선정 규칙 (우선순위):
+      1. 분류 사례(classification_cases) 수가 가장 많은 hs_code — 실무 빈도 반영.
+      2. tariff_line 이 ``9000`` 또는 ``9999`` 로 끝나는 "기타" 세번 (heading 을
+         대표 해설하는 경향).
+      3. hs_code 문자열 오름차순 (폴백).
+
+    Why: 이전 구현은 ``ORDER BY hs_code`` 첫 항목만 썼는데, heading 첫 세번이 "립스틱"
+    같은 특수 품목이면 Deep Verify 가 일반 heading 검증에서 엉뚱한 mismatch 를 냈다.
+    Cetaphil 바디로션 case: heading 3304 대표가 3304.10.1000(립스틱) 으로 잡혀 정답
+    3304.99 로 가지 못함. 사례 빈도 기반은 실제 수입 빈도를 반영해 대표성이 높다.
+    """
     if not headings:
         return {}
-    stmt = select(HSCode).where(HSCode.heading.in_(headings)).order_by(HSCode.hs_code)
+    # LEFT JOIN classification_cases, 카운트 내림차순 + "기타" 패턴 우선 + 코드 순.
+    from api.db.models import ClassificationCase
+
+    case_count = func.count(ClassificationCase.id).label("ccnt")
+    # tariff_line 끝 4자리가 9 로 시작하면(9000/9900/9999 등) "기타" 로 간주하여 가점.
+    other_priority = func.substr(HSCode.hs_code, 7, 1).label("suffix9")
+    stmt = (
+        select(HSCode, case_count, other_priority)
+        .outerjoin(ClassificationCase, ClassificationCase.hs_code == HSCode.hs_code)
+        .where(HSCode.heading.in_(headings))
+        .group_by(HSCode.hs_code)
+        # case 많은 순 → "기타" 세번 우선 ('9' 로 시작) → 코드 오름차순
+        .order_by(
+            HSCode.heading,
+            case_count.desc(),
+            (other_priority == "9").desc(),
+            HSCode.hs_code,
+        )
+    )
     out: dict[str, HSCode] = {}
-    for row in session.execute(stmt).scalars():
-        out.setdefault(row.heading, row)
+    for row in session.execute(stmt):
+        hs = row[0]
+        out.setdefault(hs.heading, hs)
     return out
 
 
@@ -331,8 +366,16 @@ def aggregate_candidates(
     note_hits: list[NoteHit],
     case_hits: list[CaseHit],
     hs_master: dict[str, HSCode],
+    *,
+    hint_headings: set[str] | None = None,
+    hint_chapters: set[int] | None = None,
 ) -> list[HSCandidate]:
-    """heading 별 점수 = 1 - min(distance). case 거리에 ``CASE_SCORE_WEIGHT`` 를 곱해 부스트."""
+    """heading 별 점수 = 1 - min(distance). case 거리에 ``CASE_SCORE_WEIGHT`` 를 곱해 부스트.
+
+    ``hint_headings`` · ``hint_chapters`` 가 주어지면 Input Gate 의 도메인 지식 힌트로
+    간주하여 일치하는 heading 의 score 를 승수로 부스트한다. 해설서 원문 검증은
+    Deep Verify 가 수행하므로 힌트가 틀려도 오분류로 직결되지 않는다.
+    """
     from api.services.hs_sections import heading_to_section
 
     @dataclass
@@ -361,12 +404,25 @@ def aggregate_candidates(
             b.best_distance = effective
             b.top_snippet = f"[사례] {c.product_name[:140]}"
 
+    hint_headings = hint_headings or set()
+    hint_chapters = hint_chapters or set()
+
     candidates: list[HSCandidate] = []
     for heading, bkt in buckets.items():
         if bkt.best_distance == float("inf"):
             continue
         # cosine_distance 는 [0, 2] 범위. 관습상 score = max(0, 1 - distance).
         score = max(0.0, min(1.0, 1.0 - bkt.best_distance))
+
+        # 힌트 부스트: heading 완전 일치면 ×1.3, chapter 만 일치면 ×1.1. [0,1] 로 클램프.
+        boosted = False
+        if heading in hint_headings:
+            score = min(1.0, score * HINT_HEADING_BOOST)
+            boosted = True
+        elif heading[:2].isdigit() and int(heading[:2]) in hint_chapters:
+            score = min(1.0, score * HINT_CHAPTER_BOOST)
+            boosted = True
+
         hs = hs_master.get(heading)
         candidates.append(
             HSCandidate(
@@ -381,6 +437,9 @@ def aggregate_candidates(
                 top_snippet=bkt.top_snippet,
             )
         )
+        if boosted:
+            logger.debug("hint boost: heading=%s new_score=%.3f", heading, score)
+
     candidates.sort(key=lambda c: (-c.score, -(c.notes_hits + c.cases_hits), c.heading))
     return candidates
 

@@ -224,6 +224,51 @@ def test_aggregate_candidates_top_snippet_from_closest_hit() -> None:
     assert cands[0].top_snippet == "closest"
 
 
+def test_aggregate_candidates_heading_hint_boosts_score() -> None:
+    """hint_headings 완전 일치 → score ×1.3 (상한 1.0 클립)."""
+    notes = [_note("3304", 0.4), _note("8471", 0.1)]
+    cands = aggregate_candidates(notes, [], {}, hint_headings={"3304"})
+    # 3304: 기본 0.6 → 0.78 (boost)
+    # 8471: 기본 0.9 (no boost)
+    by_h = {c.heading: c for c in cands}
+    assert by_h["3304"].score == pytest.approx(0.6 * 1.30)
+    assert by_h["8471"].score == pytest.approx(0.9)
+
+
+def test_aggregate_candidates_chapter_hint_boosts_score() -> None:
+    """heading 불일치 but chapter 일치 → ×1.1."""
+    notes = [_note("3304", 0.5), _note("8471", 0.5)]
+    cands = aggregate_candidates(notes, [], {}, hint_chapters={33})
+    by_h = {c.heading: c for c in cands}
+    assert by_h["3304"].score == pytest.approx(0.5 * 1.10)
+    assert by_h["8471"].score == pytest.approx(0.5)
+
+
+def test_aggregate_candidates_heading_hint_clips_to_one() -> None:
+    """이미 점수 높은 heading 에 boost 적용해도 1.0 초과 금지."""
+    notes = [_note("3304", 0.05)]  # 기본 0.95
+    cands = aggregate_candidates(notes, [], {}, hint_headings={"3304"})
+    # 0.95 × 1.30 = 1.235 → clipped to 1.0
+    assert cands[0].score == 1.0
+
+
+def test_aggregate_candidates_heading_boost_takes_precedence_over_chapter() -> None:
+    """heading + chapter 모두 매치 시 heading boost 만 적용 (중복 없이)."""
+    notes = [_note("3304", 0.5)]
+    cands = aggregate_candidates(
+        notes, [], {}, hint_headings={"3304"}, hint_chapters={33}
+    )
+    # 0.5 × 1.30 만 적용 (× 1.43 이 아님)
+    assert cands[0].score == pytest.approx(0.5 * 1.30)
+
+
+def test_aggregate_candidates_no_hints_unchanged() -> None:
+    """힌트 없을 때 기존 동작 유지."""
+    notes = [_note("8471", 0.1)]
+    cands = aggregate_candidates(notes, [], {})  # no kwargs
+    assert cands[0].score == pytest.approx(0.9)
+
+
 def test_aggregate_candidates_tiebreak_by_hit_count() -> None:
     notes = [_note("8471", 0.2), _note("6109", 0.2), _note("8471", 0.2)]
     cands = aggregate_candidates(notes, [], {})

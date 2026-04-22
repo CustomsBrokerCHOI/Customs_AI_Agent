@@ -236,6 +236,13 @@ class ClassifyJob(Base):
     # 입력 시점의 HSK 버전 (HS 개정 5년 주기 대응)
     hsk_year: Mapped[int] = mapped_column(Integer, default=2022, nullable=False)
 
+    # Input Gate follow-up 우회 플래그. True 면 엔진은 needs_more_info 여부와
+    # 무관하게 원본 입력만으로 경합 후보를 확대(최대 5개) 반환한다.
+    force_classify: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # 관세사가 제시한 최소 신뢰도 컷오프 (정수 %, 허용 31~69). NULL 이면 엔진 기본값(30%).
+    min_confidence_pct: Mapped[int | None] = mapped_column(Integer)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

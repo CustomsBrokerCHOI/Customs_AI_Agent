@@ -93,9 +93,33 @@ export function StageTimeline({ meta }: { meta?: EngineMeta }) {
 
   if (rendered.length === 0) return null;
 
+  const chips: string[] = [];
+  if (meta.force_classify) chips.push("강제 분류");
+  if (typeof meta.min_confidence_pct === "number") {
+    chips.push(`임계값 ${meta.min_confidence_pct}%`);
+  }
+  if (typeof meta.filtered_below_threshold === "number" && meta.filtered_below_threshold > 0) {
+    chips.push(`필터링 ${meta.filtered_below_threshold}건`);
+  }
+  if (typeof meta.top_n === "number") chips.push(`Top-${meta.top_n}`);
+
   return (
     <section className="rounded-lg border bg-white p-4 shadow-sm">
-      <h2 className="mb-3 text-sm font-semibold text-neutral-700">분류 과정</h2>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-neutral-700">분류 과정</h2>
+        {chips.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {chips.map((c) => (
+              <span
+                key={c}
+                className="rounded bg-neutral-100 px-2 py-0.5 text-xs text-neutral-700"
+              >
+                {c}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
       <ol className="space-y-2">
         {rendered.map((s) => (
           <li key={s.key} className="flex items-start gap-3 text-sm">

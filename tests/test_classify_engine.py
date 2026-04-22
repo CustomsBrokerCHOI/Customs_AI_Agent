@@ -312,6 +312,353 @@ async def test_run_returns_follow_up_when_input_gate_needs_info(
 
 
 @pytest.mark.asyncio
+async def test_force_classify_bypasses_input_gate_and_widens_top_n(
+    monkeypatch, fake_openai_client
+) -> None:
+    """Input Gate 가 follow-up 을 요구해도 force_classify=True 면 게이트 우회.
+
+    - 후보는 최대 FORCE_CLASSIFY_TOP_N(5) 까지 확대
+    - follow_up_questions 가 meta 에 보존되어 UI 에 노출 가능
+    - notice 에 "관세사 강제 진행" 안내 포함
+    """
+    from api.services import classify_engine as ce
+
+    async def fake_extract(*a, **kw):
+        return _input_gate_result(
+            needs_more_info=True,
+            follow_ups=["원산지?", "영양성분?"],  # 행정 정보 샘플 (force 로 넘어감)
+        )
+
+    async def fake_determine_sections(features, *, client=None, **kw):
+        return [SectionCandidate(section_roman="XVI", confidence=0.9, reasoning="r")]
+
+    # 5개 후보 제공 (top_n 확대 확인용)
+    hs_cands = [
+        HSCandidate(heading=f"847{i}", hs_code=f"847{i}000000", score=0.9 - 0.05 * i,
+                    name_kr=f"품명{i}", section_roman="XVI")
+        for i in range(6)
+    ]
+    fake_search = SearchResult(
+        section_candidates=[SectionCandidate(section_roman="XVI", confidence=0.9, reasoning="r")],
+        hs_candidates=hs_cands,
+        query="q",
+        meta={"note_hits": 10, "case_hits": 2},
+    )
+
+    async def fake_verify_candidate(features, candidate, bundle, *, client=None, **kw):
+        return _mk_verdict(candidate.heading, "match", 0.8)
+
+    def fake_fetch_note_bundle(session, heading, hsk_year=2022):
+        from api.services.rag_verify import NoteBundle
+
+        return NoteBundle(
+            heading=heading, hsk_year=hsk_year,
+            notes={("heading_note", "ko"): "설명"},
+        )
+
+    monkeypatch.setattr(ce, "extract_features", fake_extract)
+    monkeypatch.setattr(ce, "determine_sections", fake_determine_sections)
+    monkeypatch.setattr(ce, "verify_candidate", fake_verify_candidate)
+    monkeypatch.setattr(ce, "fetch_note_bundle", fake_fetch_note_bundle)
+    monkeypatch.setattr(
+        ce, "_build_sync_search_callable", lambda *a, **kw: lambda _s: fake_search
+    )
+
+    result = await run(
+        ClassifyInput(product_name="x", description="y", force_classify=True),
+        _FakeAsyncSession(),
+        openai_client=fake_openai_client,
+        claude_client=AsyncMock(),
+    )
+
+    # 게이트 우회: 후보가 비어있지 않아야 함
+    assert result.candidates, "force_classify=True 인데 후보 0건"
+    # 최대 FORCE_CLASSIFY_TOP_N(5) 까지 확대
+    assert len(result.candidates) == 5
+    # meta 에 flag + 질문 보존
+    assert result.meta["force_classify"] is True
+    assert result.meta["top_n"] == 5
+    assert result.meta["follow_up_questions"] == ["원산지?", "영양성분?"]
+    # stage 에 bypass 표시
+    assert result.meta["stages"]["input_gate"]["bypassed"] is True
+    # notice 에 안내 + 질문 목록 포함
+    assert "force_classify" in result.notice or "강제 진행" in result.notice
+    assert "원산지?" in result.notice
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_candidates_are_filtered_below_threshold(
+    monkeypatch, fake_openai_client
+) -> None:
+    """Deep Verify 결과가 전부 mismatch (confidence≈0) 면 필터링되어 빈 후보 + 안내.
+
+    관세사에게 근거 약한 후보를 보여 혼란 주는 대신, 명시적 안내 notice 만 반환.
+    meta.filtered_below_threshold 로 drop 된 수 노출.
+    """
+    from api.services import classify_engine as ce
+
+    async def fake_extract(*a, **kw):
+        return _input_gate_result()
+
+    async def fake_determine_sections(features, *, client=None, **kw):
+        return [SectionCandidate(section_roman="XVI", confidence=0.9, reasoning="r")]
+
+    fake_search = SearchResult(
+        section_candidates=[SectionCandidate(section_roman="XVI", confidence=0.9, reasoning="r")],
+        hs_candidates=[
+            HSCandidate(heading="8471", hs_code="8471300000", score=0.8,
+                        name_kr="NB", section_roman="XVI"),
+            HSCandidate(heading="8472", hs_code="8472000000", score=0.7,
+                        name_kr="기타", section_roman="XVI"),
+        ],
+        query="q",
+        meta={"note_hits": 5, "case_hits": 0},
+    )
+
+    async def fake_verify_mismatch(features, candidate, bundle, *, client=None, **kw):
+        # mismatch 는 _combine_confidence 가 0.2*s*(1-v) 로 매우 낮게 계산
+        return _mk_verdict(candidate.heading, "mismatch", 0.9)
+
+    def fake_bundle(session, heading, hsk_year=2022):
+        from api.services.rag_verify import NoteBundle
+
+        return NoteBundle(heading=heading, hsk_year=hsk_year,
+                          notes={("heading_note", "ko"): "n"})
+
+    monkeypatch.setattr(ce, "extract_features", fake_extract)
+    monkeypatch.setattr(ce, "determine_sections", fake_determine_sections)
+    monkeypatch.setattr(ce, "verify_candidate", fake_verify_mismatch)
+    monkeypatch.setattr(ce, "fetch_note_bundle", fake_bundle)
+    monkeypatch.setattr(
+        ce, "_build_sync_search_callable", lambda *a, **kw: lambda _s: fake_search
+    )
+
+    result = await run(
+        ClassifyInput(product_name="x", description="y"),
+        _FakeAsyncSession(),
+        openai_client=fake_openai_client,
+        claude_client=AsyncMock(),
+        top_n=2,
+    )
+
+    # 둘 다 mismatch → 필터링으로 제거
+    assert result.candidates == []
+    assert result.meta["filtered_below_threshold"] == 2
+    assert result.meta["min_confidence"] == 0.30
+    assert "유사도 부족" in result.notice
+    assert "30%" in result.notice
+
+
+@pytest.mark.asyncio
+async def test_user_provided_min_confidence_pct_overrides_default(
+    monkeypatch, fake_openai_client
+) -> None:
+    """min_confidence_pct=65 이면 65% 미만 후보 모두 drop.
+
+    기본값 30% 였으면 살아남았을 match (conf≈0.5) 가 사용자 지정 65% 에서는 탈락.
+    """
+    from api.services import classify_engine as ce
+
+    async def fake_extract(*a, **kw):
+        return _input_gate_result()
+
+    async def fake_determine_sections(features, *, client=None, **kw):
+        return [SectionCandidate(section_roman="XVI", confidence=0.9, reasoning="r")]
+
+    fake_search = SearchResult(
+        section_candidates=[SectionCandidate(section_roman="XVI", confidence=0.9, reasoning="r")],
+        hs_candidates=[
+            HSCandidate(heading="8471", hs_code="8471300000", score=0.5,
+                        name_kr="NB", section_roman="XVI"),  # combined ~0.5 (match)
+            HSCandidate(heading="8473", hs_code="8473300000", score=0.9,
+                        name_kr="기타", section_roman="XVI"),  # combined ~0.85 (match)
+        ],
+        query="q",
+        meta={"note_hits": 2, "case_hits": 0},
+    )
+
+    async def fake_verify(features, candidate, bundle, *, client=None, **kw):
+        return _mk_verdict(candidate.heading, "match", 0.5)
+
+    def fake_bundle(session, heading, hsk_year=2022):
+        from api.services.rag_verify import NoteBundle
+
+        return NoteBundle(heading=heading, hsk_year=hsk_year,
+                          notes={("heading_note", "ko"): "n"})
+
+    monkeypatch.setattr(ce, "extract_features", fake_extract)
+    monkeypatch.setattr(ce, "determine_sections", fake_determine_sections)
+    monkeypatch.setattr(ce, "verify_candidate", fake_verify)
+    monkeypatch.setattr(ce, "fetch_note_bundle", fake_bundle)
+    monkeypatch.setattr(
+        ce, "_build_sync_search_callable", lambda *a, **kw: lambda _s: fake_search
+    )
+
+    # 기본(30%) 로는 둘 다 통과해야 함
+    result_default = await run(
+        ClassifyInput(product_name="x", description="y"),
+        _FakeAsyncSession(),
+        openai_client=fake_openai_client,
+        claude_client=AsyncMock(),
+        top_n=2,
+    )
+    assert len(result_default.candidates) == 2
+    assert result_default.meta["min_confidence_pct"] == 30
+
+    # 65% 로 올리면 combined≈0.5 인 8471 은 탈락, 0.85 인 8473 만 남음
+    result_strict = await run(
+        ClassifyInput(product_name="x", description="y", min_confidence_pct=65),
+        _FakeAsyncSession(),
+        openai_client=fake_openai_client,
+        claude_client=AsyncMock(),
+        top_n=2,
+    )
+    assert len(result_strict.candidates) == 1
+    assert result_strict.candidates[0].heading == "8473"
+    assert result_strict.meta["min_confidence_pct"] == 65
+    assert result_strict.meta["filtered_below_threshold"] == 1
+
+
+def test_classify_request_rejects_min_confidence_pct_out_of_range() -> None:
+    """Pydantic 경계 검증: 30·70 은 금지 (gt=30, lt=70)."""
+    from pydantic import ValidationError
+
+    from api.schemas.classify import ClassifyRequest
+
+    # 유효 경계값: 31, 69
+    ClassifyRequest(product_name="x", description="y", min_confidence_pct=31)
+    ClassifyRequest(product_name="x", description="y", min_confidence_pct=69)
+
+    # 금지 경계: 30, 70
+    with pytest.raises(ValidationError):
+        ClassifyRequest(product_name="x", description="y", min_confidence_pct=30)
+    with pytest.raises(ValidationError):
+        ClassifyRequest(product_name="x", description="y", min_confidence_pct=70)
+    # 훨씬 바깥
+    with pytest.raises(ValidationError):
+        ClassifyRequest(product_name="x", description="y", min_confidence_pct=0)
+    with pytest.raises(ValidationError):
+        ClassifyRequest(product_name="x", description="y", min_confidence_pct=100)
+
+
+@pytest.mark.asyncio
+async def test_threshold_keeps_above_and_drops_below(monkeypatch, fake_openai_client) -> None:
+    """일부 match (conf 높음) + 일부 mismatch (conf 낮음) 섞인 경우: match 만 남는다."""
+    from api.services import classify_engine as ce
+
+    async def fake_extract(*a, **kw):
+        return _input_gate_result()
+
+    async def fake_determine_sections(features, *, client=None, **kw):
+        return [SectionCandidate(section_roman="XVI", confidence=0.9, reasoning="r")]
+
+    fake_search = SearchResult(
+        section_candidates=[SectionCandidate(section_roman="XVI", confidence=0.9, reasoning="r")],
+        hs_candidates=[
+            HSCandidate(heading="8471", hs_code="8471300000", score=0.9,
+                        name_kr="NB", section_roman="XVI"),
+            HSCandidate(heading="8472", hs_code="8472000000", score=0.6,
+                        name_kr="기타", section_roman="XVI"),
+        ],
+        query="q",
+        meta={"note_hits": 2, "case_hits": 0},
+    )
+
+    async def mixed_verify(features, candidate, bundle, *, client=None, **kw):
+        # 8471: match (conf 높음), 8472: mismatch (conf 낮음)
+        if candidate.heading == "8471":
+            return _mk_verdict("8471", "match", 0.9)
+        return _mk_verdict("8472", "mismatch", 0.9)
+
+    def fake_bundle(session, heading, hsk_year=2022):
+        from api.services.rag_verify import NoteBundle
+
+        return NoteBundle(heading=heading, hsk_year=hsk_year,
+                          notes={("heading_note", "ko"): "n"})
+
+    monkeypatch.setattr(ce, "extract_features", fake_extract)
+    monkeypatch.setattr(ce, "determine_sections", fake_determine_sections)
+    monkeypatch.setattr(ce, "verify_candidate", mixed_verify)
+    monkeypatch.setattr(ce, "fetch_note_bundle", fake_bundle)
+    monkeypatch.setattr(
+        ce, "_build_sync_search_callable", lambda *a, **kw: lambda _s: fake_search
+    )
+
+    result = await run(
+        ClassifyInput(product_name="x", description="y"),
+        _FakeAsyncSession(),
+        openai_client=fake_openai_client,
+        claude_client=AsyncMock(),
+        top_n=2,
+    )
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].heading == "8471"
+    assert result.candidates[0].verdict == "match"
+    assert result.candidates[0].confidence >= 0.30
+    assert result.candidates[0].rank == 1  # 재부여 확인
+    assert result.meta["filtered_below_threshold"] == 1
+
+
+@pytest.mark.asyncio
+async def test_force_classify_without_follow_ups_keeps_default_top_n_behavior(
+    monkeypatch, fake_openai_client
+) -> None:
+    """force_classify=True 이지만 Input Gate 가 정보 충분하다 판단(follow_ups=[])한 경우:
+
+    - 우회 경로가 아닌 정상 경로. ``bypassed=False`` 여야 함
+    - 다만 요청 플래그 자체는 meta 에 기록되고 top_n 은 여전히 확대(5)
+    - follow_up_questions 는 meta 에 없음 (빈 배열)
+    """
+    from api.services import classify_engine as ce
+
+    async def fake_extract(*a, **kw):
+        return _input_gate_result(needs_more_info=False, follow_ups=[])
+
+    async def fake_determine_sections(features, *, client=None, **kw):
+        return [SectionCandidate(section_roman="XVI", confidence=0.9, reasoning="r")]
+
+    fake_search = SearchResult(
+        section_candidates=[SectionCandidate(section_roman="XVI", confidence=0.9, reasoning="r")],
+        hs_candidates=[
+            HSCandidate(heading="8471", hs_code="8471300000", score=0.9,
+                        name_kr="노트북", section_roman="XVI"),
+        ],
+        query="q",
+        meta={"note_hits": 1, "case_hits": 0},
+    )
+
+    async def fake_verify(features, candidate, bundle, *, client=None, **kw):
+        return _mk_verdict(candidate.heading, "match", 0.9)
+
+    def fake_bundle(session, heading, hsk_year=2022):
+        from api.services.rag_verify import NoteBundle
+
+        return NoteBundle(heading=heading, hsk_year=hsk_year,
+                          notes={("heading_note", "ko"): "text"})
+
+    monkeypatch.setattr(ce, "extract_features", fake_extract)
+    monkeypatch.setattr(ce, "determine_sections", fake_determine_sections)
+    monkeypatch.setattr(ce, "verify_candidate", fake_verify)
+    monkeypatch.setattr(ce, "fetch_note_bundle", fake_bundle)
+    monkeypatch.setattr(
+        ce, "_build_sync_search_callable", lambda *a, **kw: lambda _s: fake_search
+    )
+
+    result = await run(
+        ClassifyInput(product_name="x", description="y", force_classify=True),
+        _FakeAsyncSession(),
+        openai_client=fake_openai_client,
+        claude_client=AsyncMock(),
+    )
+
+    assert result.meta["force_classify"] is True
+    assert result.meta["top_n"] == 5  # 여전히 확대
+    assert result.meta["stages"]["input_gate"]["bypassed"] is False
+    assert "follow_up_questions" not in result.meta
+
+
+@pytest.mark.asyncio
 async def test_run_full_happy_path(monkeypatch, fake_openai_client) -> None:
     from api.services import classify_engine as ce
 

@@ -58,6 +58,12 @@ export interface EngineMeta {
     output_tokens?: number;
     calls?: number;
   };
+  // 요청 단계에서 관세사가 선택한 옵션 (백엔드에서 노출)
+  force_classify?: boolean;
+  min_confidence?: number; // 0~1 실수
+  min_confidence_pct?: number; // 0~100 정수
+  filtered_below_threshold?: number;
+  top_n?: number;
 }
 
 export interface JobStatusResponse {
@@ -140,6 +146,11 @@ export interface ClassifyRequestPayload {
   product_name: string;
   description: string;
   image_url?: string;
+  // Input Gate follow-up 우회. true 면 정보 부족해도 경합 후보 최대 5건 반환.
+  force_classify?: boolean;
+  // 후보 제시 최소 신뢰도(정수 %). 허용 31~69 (백엔드 gt=30, lt=70).
+  // undefined 면 엔진 기본값 30% 사용.
+  min_confidence_pct?: number;
 }
 
 export interface LoginPayload {

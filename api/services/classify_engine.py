@@ -57,7 +57,13 @@ from api.services.verify import verify_search_result
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOP_N = settings.top_n_verified
+# force_classify=True 시 경합 후보 확대 상한. Input Gate 정보 부족 상태에서
+# 관세사가 "모른다" 로 진행하면 더 넓게 비교 후보를 보여준다.
+FORCE_CLASSIFY_TOP_N = 5
 DEFAULT_HSK_YEAR = 2022
+# 사용자에게 제시하는 후보의 하한 confidence (0~1). 30% 미만은 근거가 너무 약해
+# 관세사에게 혼란만 주므로 응답에서 제외. 모두 하한 미달이면 빈 후보 + 안내.
+MIN_CONFIDENCE = 0.30
 DRAFT_NOTICE = (
     "⚠️ 본 결과는 AI 보조 초안(Draft)입니다. 관세사의 최종 확인 없이 세관 신고에 사용할 수 없습니다."
 )
@@ -74,6 +80,12 @@ class ClassifyInput:
     # HS 개정 5년 주기 대응: 분류 시점의 HSK 연도 (ClassifyJob.hsk_year 와 동일).
     # 듀얼 운영 전환 시 라우터가 이 값을 주입.
     hsk_year: int = DEFAULT_HSK_YEAR
+    # 관세사가 Input Gate follow-up 을 "모른다" 로 판단. True 면 게이트 우회 +
+    # 경합 후보 ``FORCE_CLASSIFY_TOP_N`` 까지 확대.
+    force_classify: bool = False
+    # 요청별 최소 신뢰도 컷오프 (정수 %, 허용 31~69). None 이면 ``MIN_CONFIDENCE``.
+    # 범위 검증은 API 스키마(Pydantic) 에서 수행 — 여기서는 값을 신뢰.
+    min_confidence_pct: int | None = None
 
 
 @dataclass
@@ -154,7 +166,11 @@ async def run(
     :param openai_client: sync OpenAI. None 이면 settings 로 생성.
     :param claude_client: AsyncAnthropic. None 이면 settings 로 생성.
     """
-    logger.info("classify.run start: product=%r", inp.product_name[:60])
+    logger.info(
+        "classify.run start: product=%r force_classify=%s",
+        inp.product_name[:60],
+        inp.force_classify,
+    )
     usage = _UsageAccumulator()
     stages: dict[str, Any] = {}
 
@@ -167,12 +183,18 @@ async def run(
         "confidence": ig.features.confidence,
         "needs_more_info": ig.needs_more_info,
         "follow_up_count": len(ig.features.follow_up_questions),
+        "bypassed": bool(inp.force_classify and ig.needs_more_info),
     }
 
-    if ig.needs_more_info:
+    # force_classify=False + needs_more_info=True → 되묻기 루프 반환.
+    # force_classify=True → 게이트 우회, 원본 입력 기반 경합 후보 확대(최대 5).
+    if ig.needs_more_info and not inp.force_classify:
         return _build_need_info_result(ig, usage, stages)
 
     features = ig.features
+    # force_classify 경로는 Deep Verify 대상을 넓혀 "경합 후보 3~5" UX 를 충족.
+    if inp.force_classify:
+        top_n = FORCE_CLASSIFY_TOP_N
 
     # === 3-B part 1: Section 결정 (async Claude) ===
     section_candidates: list[SectionCandidate] = await determine_sections(
@@ -193,16 +215,29 @@ async def run(
 
     # === 3-B part 3: pgvector + aggregate (sync DB) ===
     chapters = chapters_from_romans([s.section_roman for s in section_candidates])
+    # Input Gate 힌트: chapter 는 section 으로 역추적 못하는 보완 (브랜드 지식 기반).
+    hint_chapters = set(features.expected_chapter_numbers)
+    hint_headings = set(features.expected_headings)
+    # 힌트 heading 에서 파생된 chapter 도 필터에 포함 (heading '3304' → chapter 33)
+    for h in hint_headings:
+        if len(h) >= 2 and h[:2].isdigit():
+            hint_chapters.add(int(h[:2]))
+    chapters_combined = chapters | hint_chapters
     k = settings.top_k_candidates
 
     search_result: SearchResult = await db.run_sync(
-        _build_sync_search_callable(query_vec, chapters, k, section_candidates, query_text)
+        _build_sync_search_callable(
+            query_vec, chapters_combined, k, section_candidates, query_text,
+            hint_headings=hint_headings, hint_chapters=hint_chapters,
+        )
     )
     stages["search"] = {
         "note_hits": search_result.meta.get("note_hits", 0),
         "case_hits": search_result.meta.get("case_hits", 0),
         "candidates": len(search_result.hs_candidates),
-        "chapters_filter": sorted(chapters) if chapters else None,
+        "chapters_filter": sorted(chapters_combined) if chapters_combined else None,
+        "hint_chapters": sorted(hint_chapters) if hint_chapters else None,
+        "hint_headings": sorted(hint_headings) if hint_headings else None,
     }
 
     # === 3-C Verification Gate ===
@@ -218,7 +253,10 @@ async def run(
     if verify_result.should_re_determine:
         logger.info("verify_gate empty → retry without filter, bypass gate")
         search_result = await db.run_sync(
-            _build_sync_search_callable(query_vec, set(), k, section_candidates, query_text)
+            _build_sync_search_callable(
+                query_vec, set(), k, section_candidates, query_text,
+                hint_headings=hint_headings, hint_chapters=hint_chapters,
+            )
         )
         verified_pool: list[HSCandidate] = search_result.hs_candidates[: top_n * 2]
         stages["verify_gate_retry"] = {
@@ -267,21 +305,81 @@ async def run(
         "mismatch": sum(1 for v in verdicts if v.verdict == "mismatch"),
         "uncertain": sum(1 for v in verdicts if v.verdict == "uncertain"),
         "errors": errors,
+        # 진단용: Deep Verify 에 실제 어떤 heading 이 갔고 각 verdict 가 무엇인지.
+        # filter 후 후보 0건 상황에서도 관찰 가능하도록 meta 에 보존.
+        "verdicts": [
+            {
+                "heading": v.candidate_heading,
+                "verdict": v.verdict,
+                "confidence": v.confidence,
+                "reasoning": (v.reasoning or "")[:200],
+                "matched": len(v.matched_clauses),
+                "conflicting": len(v.conflicting_clauses),
+                "unverified": len(v.unverified_citations),
+            }
+            for v in verdicts
+        ],
+        "candidate_headings": [c.heading for c in top_candidates],
     }
 
     # === 결과 조립 ===
-    candidates_out = _build_candidate_outs(top_candidates, verdicts)
+    all_candidates = _build_candidate_outs(top_candidates, verdicts)
+
+    # 요청별 신뢰도 컷오프. 미지정 시 엔진 기본값.
+    threshold = (
+        inp.min_confidence_pct / 100.0
+        if inp.min_confidence_pct is not None
+        else MIN_CONFIDENCE
+    )
+    threshold_pct = int(round(threshold * 100))
+
+    # 하한 미만 후보 제거. rank 재부여.
+    candidates_out = [c for c in all_candidates if c.confidence >= threshold]
+    filtered_below = len(all_candidates) - len(candidates_out)
+    for i, c in enumerate(candidates_out, 1):
+        c.rank = i
+
     notice = _build_notice(candidates_out, errors)
+
+    # 전부 하한 미달이면 명시적 안내.
+    if all_candidates and not candidates_out:
+        notice = (
+            f"[유사도 부족] 검토된 {len(all_candidates)}건 중 {threshold_pct}% 이상 "
+            f"신뢰 후보가 없습니다. 품명·설명을 보완해 재요청하거나 관세사가 직접 "
+            f"근거 조항을 대조하세요. {DRAFT_NOTICE}"
+        )
+
+    # force_classify 경로: 원본 질문과 경합 안내를 notice 에 덧붙이고 메타에도 보존.
+    follow_ups = list(ig.features.follow_up_questions) if ig.needs_more_info else []
+    if inp.force_classify and ig.needs_more_info:
+        followup_block = "\n".join(f"- {q}" for q in follow_ups)
+        notice = (
+            (notice + "\n\n") if notice else ""
+        ) + (
+            f"⚠️ 관세사 강제 진행(force_classify): Input Gate 가 아래 정보를 "
+            f"필요로 했으나 '모름'으로 처리했습니다. 경합 후보 {len(candidates_out)}건을 "
+            "근거와 함께 제시합니다. 최종 세번은 관세사가 대조·확정하세요.\n"
+            + followup_block
+        )
+
+    meta = {
+        "engine": "real",
+        "draft": True,
+        "stages": stages,
+        "usage": usage.summary(),
+        "force_classify": bool(inp.force_classify),
+        "top_n": top_n,
+        "min_confidence": threshold,
+        "min_confidence_pct": threshold_pct,
+        "filtered_below_threshold": filtered_below,
+    }
+    if follow_ups:
+        meta["follow_up_questions"] = follow_ups
 
     return EngineResult(
         candidates=candidates_out,
         notice=notice,
-        meta={
-            "engine": "real",
-            "draft": True,
-            "stages": stages,
-            "usage": usage.summary(),
-        },
+        meta=meta,
     )
 
 
@@ -294,6 +392,9 @@ def _build_sync_search_callable(
     k: int,
     section_candidates: list[SectionCandidate],
     query_text: str,
+    *,
+    hint_headings: set[str] | None = None,
+    hint_chapters: set[int] | None = None,
 ):
     def _inner(session) -> SearchResult:
         filt = chapters or None
@@ -303,7 +404,13 @@ def _build_sync_search_callable(
             {h.heading for h in note_hits} | {c.heading for c in case_hits if c.heading}
         )
         hs_master = _load_hs_master_for_headings(session, headings)
-        hs_candidates = aggregate_candidates(note_hits, case_hits, hs_master)
+        hs_candidates = aggregate_candidates(
+            note_hits,
+            case_hits,
+            hs_master,
+            hint_headings=hint_headings,
+            hint_chapters=hint_chapters,
+        )
         return SearchResult(
             section_candidates=list(section_candidates),
             hs_candidates=hs_candidates,
@@ -312,6 +419,8 @@ def _build_sync_search_callable(
                 "note_hits": len(note_hits),
                 "case_hits": len(case_hits),
                 "chapters_filter": sorted(chapters) if chapters else None,
+                "hint_headings": sorted(hint_headings) if hint_headings else None,
+                "hint_chapters": sorted(hint_chapters) if hint_chapters else None,
             },
         )
 
@@ -332,8 +441,13 @@ def _build_need_info_result(
     ig: InputGateResult, usage: _UsageAccumulator, stages: dict
 ) -> EngineResult:
     questions = ig.features.follow_up_questions
-    notice = "정보가 부족해 분류를 진행할 수 없습니다. 다음을 보완해주세요:\n" + "\n".join(
-        f"- {q}" for q in questions
+    notice = (
+        "정보가 부족해 분류를 진행할 수 없습니다. 다음을 보완해주세요:\n"
+        + "\n".join(f"- {q}" for q in questions)
+        + (
+            "\n\n위 항목을 알 수 없으면 `force_classify=true` 로 재요청하면 "
+            "원본 정보만으로 경합 후보 최대 5건을 근거와 함께 제시합니다."
+        )
     )
     return EngineResult(
         candidates=[],

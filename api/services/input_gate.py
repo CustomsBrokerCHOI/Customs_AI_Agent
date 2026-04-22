@@ -51,6 +51,21 @@ class ProductFeatures(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0)
     follow_up_questions: list[str] = Field(default_factory=list)
 
+    # ---- 분류 힌트 (도메인 지식) ----
+    # LLM 이 브랜드·제품군 지식 기반으로 **참고용** 추정하는 필드. 최종 분류는 아니며,
+    # 해설서 substring 검증(Deep Verify) 으로 할루시네이션 걸러낸다. 확신 없으면 공란.
+    expected_chapter_numbers: list[int] = Field(
+        default_factory=list,
+        description="분류 가능성이 높은 HS 류 번호(2자리) 후보",
+    )
+    expected_headings: list[str] = Field(
+        default_factory=list,
+        description="분류 가능성이 높은 4자리 호 후보 (예: '3304')",
+    )
+    classification_reasoning: str | None = Field(
+        None, description="힌트 근거(브랜드·용도 기반)"
+    )
+
 
 @dataclass
 class InputGateResult:
@@ -81,6 +96,20 @@ TOOL_SCHEMA: dict[str, Any] = {
             "follow_up_questions": {
                 "type": "array",
                 "items": {"type": "string"},
+            },
+            "expected_chapter_numbers": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 1, "maximum": 99},
+                "description": "분류 가능성 높은 2자리 류 번호. 확신 없으면 빈 배열.",
+            },
+            "expected_headings": {
+                "type": "array",
+                "items": {"type": "string", "pattern": r"^\d{4}$"},
+                "description": "분류 가능성 높은 4자리 호 문자열. 확신 없으면 빈 배열.",
+            },
+            "classification_reasoning": {
+                "type": ["string", "null"],
+                "description": "힌트 근거. 없으면 null.",
             },
         },
         "required": [
@@ -155,6 +184,104 @@ def _pick_tool_use(resp: Any) -> dict[str, Any] | None:
     return None
 
 
+def _coerce_tool_input(raw: dict[str, Any]) -> dict[str, Any]:
+    """Claude 가 스키마를 살짝 틀어 반환하는 경우를 관대하게 복구.
+
+    관찰된 편차:
+    - ``key_specifications`` 를 dict 대신 JSON stringified 문자열로 반환
+    - ``materials``/``functions``/``follow_up_questions`` 를 array 대신 문자열로 반환
+    - ``null`` 필드를 공백 문자열로 반환
+
+    복구 실패 시 기본값으로 강등 (ValidationError 대신 warning) — 분류 파이프라인 중단 방지.
+    """
+    import json
+
+    def _as_dict_str_str(val: Any) -> dict[str, str] | None:
+        if isinstance(val, dict):
+            return {str(k): str(v) for k, v in val.items()}
+        if isinstance(val, str) and val.strip():
+            try:
+                parsed = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                return None
+            if isinstance(parsed, dict):
+                return {str(k): str(v) for k, v in parsed.items()}
+        return None
+
+    def _as_str_list(val: Any) -> list[str] | None:
+        if isinstance(val, list):
+            return [str(x) for x in val]
+        if isinstance(val, str) and val.strip():
+            try:
+                parsed = json.loads(val)
+                if isinstance(parsed, list):
+                    return [str(x) for x in parsed]
+            except (json.JSONDecodeError, TypeError):
+                pass
+            return [val]  # 단일 문자열을 1-원소 리스트로
+        return None
+
+    out = dict(raw)
+
+    spec = out.get("key_specifications")
+    if spec is not None and not isinstance(spec, dict):
+        coerced = _as_dict_str_str(spec)
+        if coerced is None:
+            logger.warning("key_specifications 비정상 타입 %r → {} 로 강등", type(spec).__name__)
+            out["key_specifications"] = {}
+        else:
+            logger.info("key_specifications 문자열→dict 복구 (%d keys)", len(coerced))
+            out["key_specifications"] = coerced
+
+    for list_field in ("materials", "functions", "follow_up_questions"):
+        v = out.get(list_field)
+        if v is not None and not isinstance(v, list):
+            coerced_list = _as_str_list(v)
+            if coerced_list is None:
+                logger.warning("%s 비정상 타입 %r → [] 로 강등", list_field, type(v).__name__)
+                out[list_field] = []
+            else:
+                out[list_field] = coerced_list
+
+    # 빈 문자열 → None 정규화 (optional 필드)
+    for opt_field in ("primary_use", "manufacturing_method", "form_factor", "classification_reasoning"):
+        if out.get(opt_field) == "":
+            out[opt_field] = None
+
+    # expected_headings: list[str] 이되 4자리 숫자만 통과. 그 외(3자리·문자·HS.xx 형식) 드롭.
+    exp_h = out.get("expected_headings")
+    if exp_h is not None:
+        coerced_h = _as_str_list(exp_h)
+        if coerced_h is None:
+            out["expected_headings"] = []
+        else:
+            valid = []
+            for s in coerced_h:
+                s2 = "".join(ch for ch in s if ch.isdigit())[:4]
+                if len(s2) == 4:
+                    valid.append(s2)
+            out["expected_headings"] = valid
+
+    # expected_chapter_numbers: list[int]. str 섞여 들어오면 변환, 범위 밖(1~99) 드롭.
+    exp_c = out.get("expected_chapter_numbers")
+    if exp_c is not None:
+        if not isinstance(exp_c, list):
+            coerced_c = _as_str_list(exp_c) or []
+        else:
+            coerced_c = exp_c
+        valid_ints: list[int] = []
+        for v in coerced_c:
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= n <= 99:
+                valid_ints.append(n)
+        out["expected_chapter_numbers"] = valid_ints
+
+    return out
+
+
 def _anthropic_client():
     """Anthropic AsyncClient. 3-F ``make_anthropic_client`` 로 위임 (timeout/재시도 내장)."""
     from api.services.llm_client import make_anthropic_client
@@ -199,7 +326,7 @@ async def extract_features(
     if tool_input is None:
         raise RuntimeError(f"Input Gate: Claude 가 '{TOOL_NAME}' tool_use 를 반환하지 않음")
 
-    features = ProductFeatures.model_validate(tool_input)
+    features = ProductFeatures.model_validate(_coerce_tool_input(tool_input))
 
     usage = getattr(resp, "usage", None)
     meta = {
