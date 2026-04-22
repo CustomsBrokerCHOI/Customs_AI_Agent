@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import "./globals.css";
 import { DraftBanner } from "@/components/DraftBanner";
+import { UserMenu } from "@/components/UserMenu";
 
 export const metadata: Metadata = {
   title: "Customs AI Agent — HS CODE 분류",
@@ -25,12 +26,7 @@ export default function RootLayout({
               <Link href="/" className="text-neutral-700 hover:text-neutral-900">
                 대시보드
               </Link>
-              <Link href="/login" className="text-neutral-700 hover:text-neutral-900">
-                로그인
-              </Link>
-              <Link href="/register" className="text-neutral-700 hover:text-neutral-900">
-                회원가입
-              </Link>
+              <UserMenu />
             </nav>
           </div>
         </header>
