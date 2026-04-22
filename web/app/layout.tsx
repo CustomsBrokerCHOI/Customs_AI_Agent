@@ -28,6 +28,9 @@ export default function RootLayout({
               <Link href="/login" className="text-neutral-700 hover:text-neutral-900">
                 로그인
               </Link>
+              <Link href="/register" className="text-neutral-700 hover:text-neutral-900">
+                회원가입
+              </Link>
             </nav>
           </div>
         </header>

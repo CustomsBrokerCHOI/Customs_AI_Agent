@@ -9,6 +9,7 @@ import type {
   JobStatusResponse,
   JobSummary,
   LoginPayload,
+  RegisterPayload,
   UserMe,
 } from "./types";
 
@@ -71,6 +72,13 @@ function safeParseJson(text: string): unknown {
 
 export async function login(payload: LoginPayload): Promise<UserMe> {
   return request<UserMe>("/auth/login", {
+    method: "POST",
+    json: payload,
+  });
+}
+
+export async function register(payload: RegisterPayload): Promise<UserMe> {
+  return request<UserMe>("/auth/register", {
     method: "POST",
     json: payload,
   });

@@ -124,6 +124,12 @@ export interface LoginPayload {
   password: string;
 }
 
+export interface RegisterPayload {
+  email: string;
+  password: string;
+  name?: string | null;
+}
+
 export interface UserMe {
   id: string;
   email: string;

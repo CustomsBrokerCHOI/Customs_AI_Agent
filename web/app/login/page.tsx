@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { ApiError, login } from "@/lib/api";
@@ -69,6 +70,12 @@ export default function LoginPage() {
           {pending ? "로그인 중..." : "로그인"}
         </button>
       </form>
+      <p className="text-center text-sm text-neutral-600">
+        계정이 없나요?{" "}
+        <Link href="/register" className="underline hover:text-neutral-900">
+          회원가입
+        </Link>
+      </p>
     </section>
   );
 }
