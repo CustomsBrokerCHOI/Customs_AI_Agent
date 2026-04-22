@@ -14,6 +14,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from api.core.config import settings
 from api.routers import auth, classify, health, hs
@@ -37,6 +38,16 @@ app = FastAPI(
     description="HS CODE 자동 품목분류 SaaS (Draft 초안 생성)",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+# 프런트(3000) ↔ API(8000) HttpOnly 쿠키 인증을 위해 credentials 허용.
+# 와일드카드 origin 은 credentials 와 호환 안 되므로 명시적 리스트 필수.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 app.include_router(health.router)

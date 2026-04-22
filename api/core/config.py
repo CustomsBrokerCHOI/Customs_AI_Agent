@@ -48,5 +48,15 @@ class Settings(BaseSettings):
     # --- Rate limit ---
     rate_limit_per_day: int = Field(100, description="관세사당 일일 분류 요청 상한")
 
+    # --- CORS ---
+    cors_origins: str = Field(
+        default="http://localhost:3000",
+        description="허용 origin 쉼표 구분. 프런트 분리 배포 시 production URL 추가.",
+    )
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
 
 settings = Settings()
