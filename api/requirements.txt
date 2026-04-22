@@ -7,6 +7,7 @@ pgvector>=0.3
 psycopg[binary]>=3.2
 python-jose[cryptography]>=3.3
 passlib[bcrypt]>=1.7
+bcrypt<4.1  # passlib 1.7.4 (미유지) 의 detect_wrap_bug 이 bcrypt 4.1+ 의 72바이트 제한과 충돌
 pydantic[email]>=2.9
 pydantic-settings>=2.6
 anthropic>=0.40
