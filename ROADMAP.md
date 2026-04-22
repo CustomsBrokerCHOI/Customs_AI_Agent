@@ -164,7 +164,7 @@
   - [x] `DataManager.upsert_items` dedupe 검증
   - [x] `chunk_explanatory_note` 경계 케이스 (tiktoken + whitespace fallback)
   - [x] `UnipassClient` 키 조회/캐시 경로/한도 검사 (네트워크 없음)
-  - [ ] `UnipassClient.call()` 모킹 테스트 (HTTP 응답 주입)
+  - [x] `UnipassClient.call()` 모킹 테스트 (HTTP 응답 주입) — `tests/test_unipass_client.py` 10건 추가: 성공 파싱+인증키 자동 주입, HTTP 4xx/5xx 전파, XML 파싱 실패, 업무 오류(errMsgCn/ntceInfo fallback), 캐시 쓰기/히트+hit 로그, force_refresh 우회, use_cache=False 스킵, daily_limit 차단 시 HTTP 호출 없음 (2026-04-22)
 - [x] 분류 엔진 5단계 단위 테스트 — `tests/test_classify_engine.py` + 각 서비스 `tests/test_input_gate.py` / `tests/test_search.py` / `tests/test_verify.py` / `tests/test_rag_verify.py` (LLM AsyncMock 으로 네트워크 없이 검증)
 - [x] FastAPI 엔드포인트 통합 테스트 — `tests/integration/` (2026-04-22). mini test app (classify/hs/health 라우터만 포함, auth 라우터는 `EmailStr` 의존 회피 위해 제외) + `get_db` / `get_current_user` dep override. 26 테스트: /health · /hs/{code} (403/422/404/200) · POST /classify (202/401/422/429) · GET /classify/{id} · GET /classify (list) · POST /review (409/422/owner 404) · report.html · report.pdf (501/200 weasyprint 모킹)
 - [ ] 실 DB 기반 통합 테스트 — 현재 mock session 기반. Postgres+pgvector 로 세션까지 커버하는 스모크는 Phase 5-C CI 파이프라인에서 docker-compose 서비스로 추가
