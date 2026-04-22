@@ -72,6 +72,118 @@ def _split_hs(hs10: str) -> tuple[str, str, str] | None:
     return s[:4], s[4:6], s[6:]
 
 
+def _parse_base_rate_pct(s: str | None) -> float | None:
+    """CLIP 의 ``"8%"`` / ``"8"`` / ``"무세"`` → float. 파싱 불가면 None."""
+    if not s:
+        return None
+    t = str(s).strip().rstrip("%").strip()
+    if not t or t in {"무세", "N", "-"}:
+        return 0.0 if t == "무세" else None
+    try:
+        return float(t)
+    except ValueError:
+        return None
+
+
+def upsert_tariffs_from_cache(
+    session: Session, cache_dir: Path
+) -> tuple[int, int, int]:
+    """``scripts.build_tariff_rates`` 가 생성한 JSON 캐시 전체 → DB upsert.
+
+    캐시 구조: ``{cache_dir}/{heading}.json`` — ``TariffLine`` 배열.
+    한 파일에 heading-level/subheading-level/10자리 행이 섞여 있음. 10자리만 적재.
+
+    :returns: ``(hs_upserted, tariff_upserted, non_10digit_skipped)``
+    """
+    files = sorted(cache_dir.glob("*.json"))
+    hs_rows: list[dict[str, Any]] = []
+    rate_rows: list[dict[str, Any]] = []
+    skipped = 0
+    for path in files:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            logger.warning("JSON 파싱 실패: %s — 스킵", path)
+            continue
+        for rec in data:
+            heading = (rec.get("heading") or "").strip()
+            sub = (rec.get("sub_heading") or "").strip()
+            line = (rec.get("tariff_line") or "").strip()
+            hs10 = f"{heading}{sub}{line}"
+            if len(hs10) != 10 or not hs10.isdigit():
+                skipped += 1
+                continue
+            hs_rows.append(
+                {
+                    "hs_code": hs10,
+                    "heading": heading,
+                    "sub_heading": sub,
+                    "tariff_line": line,
+                    "name_kr": _nn(rec.get("name_kr")),
+                    "name_en": _nn(rec.get("name_en")),
+                    "source": "CLIP",
+                }
+            )
+            br = _parse_base_rate_pct(rec.get("base_rate"))
+            if br is not None:
+                rate_rows.append(
+                    {
+                        "hs_code": hs10,
+                        "fta_code": "A",
+                        "fta_name": "기본세율",
+                        "tax_rate": br,
+                        "source": "CLIP",
+                    }
+                )
+
+    if not hs_rows:
+        return 0, 0, skipped
+
+    # hs_codes: batched upsert
+    BATCH = 1000
+    for i in range(0, len(hs_rows), BATCH):
+        chunk = hs_rows[i : i + BATCH]
+        stmt = pg_insert(HSCode).values(chunk)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[HSCode.hs_code],
+            set_={
+                "name_kr": stmt.excluded.name_kr,
+                "name_en": stmt.excluded.name_en,
+                "heading": stmt.excluded.heading,
+                "sub_heading": stmt.excluded.sub_heading,
+                "tariff_line": stmt.excluded.tariff_line,
+                "source": stmt.excluded.source,
+            },
+        )
+        session.execute(stmt)
+
+    # tariff_rates: apply_start=NULL 행 기준 존재 여부 확인 후 update/insert
+    tariff_count = 0
+    for rr in rate_rows:
+        exists = session.execute(
+            select(TariffRate.id).where(
+                TariffRate.hs_code == rr["hs_code"],
+                TariffRate.fta_code == rr["fta_code"],
+                TariffRate.apply_start.is_(None),
+            )
+        ).first()
+        if exists:
+            session.execute(
+                TariffRate.__table__.update()
+                .where(
+                    TariffRate.hs_code == rr["hs_code"],
+                    TariffRate.fta_code == rr["fta_code"],
+                    TariffRate.apply_start.is_(None),
+                )
+                .values(tax_rate=rr["tax_rate"], fta_name=rr["fta_name"])
+            )
+        else:
+            session.execute(pg_insert(TariffRate).values(rr))
+        tariff_count += 1
+
+    return len(hs_rows), tariff_count, skipped
+
+
 def upsert_hs_codes(session: Session, csv_path: Path) -> tuple[int, int]:
     """``item_master.csv`` 를 ``hs_codes`` + ``tariff_rates`` 로 upsert.
 
@@ -406,6 +518,16 @@ def main() -> int:
     p_hs = sub.add_parser("hs-codes", help="item_master.csv → hs_codes/tariff_rates")
     p_hs.add_argument("--csv", default="data/item_master.csv")
 
+    p_t = sub.add_parser(
+        "tariffs",
+        help="build_tariff_rates 캐시(JSON) → hs_codes/tariff_rates",
+    )
+    p_t.add_argument(
+        "--cache-dir",
+        default="data/cache/tariff",
+        help="build_tariff_rates 가 생성한 JSON 캐시 디렉토리",
+    )
+
     p_notes = sub.add_parser("notes", help="CLIP 해설서 JSON → explanatory_notes/note_chunks")
     p_notes.add_argument("paths", nargs="+", help="dev_probe_clip JSON 파일 또는 glob")
     p_notes.add_argument(
@@ -430,6 +552,21 @@ def main() -> int:
             hs_n, rate_n = upsert_hs_codes(session, csv_path)
             session.commit()
             print(f"[HS] upserted={hs_n}, tariff_rates={rate_n}")
+        elif args.cmd == "tariffs":
+            cache_dir = Path(args.cache_dir)
+            if not cache_dir.exists():
+                print(
+                    f"[ERROR] 캐시 디렉토리 없음: {cache_dir}\n"
+                    f"먼저 `python -m scripts.build_tariff_rates` 로 스크래핑하세요.",
+                    file=sys.stderr,
+                )
+                return 2
+            hs_n, rate_n, skipped = upsert_tariffs_from_cache(session, cache_dir)
+            session.commit()
+            print(
+                f"[TARIFFS] hs_codes upsert={hs_n} tariff_rates upsert={rate_n} "
+                f"skipped_non_10digit={skipped}"
+            )
         elif args.cmd == "notes":
             paths = _expand_paths(args.paths)
             if not paths:
