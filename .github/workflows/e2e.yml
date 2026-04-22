@@ -1,0 +1,116 @@
+name: E2E (Playwright)
+
+# Next.js 프런트 + FastAPI 백엔드 + pgvector 실 스택 대상 E2E.
+# LLM 키 없이 mock 엔진으로도 UI 플로우 검증. 비용 이슈로 schedule 은 기본 비활성.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: e2e
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Classify workflow E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: customs_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # LLM 미설정 → 백엔드 mock 엔진 사용
+      ANTHROPIC_API_KEY: ""
+      OPENAI_API_KEY: ""
+      UNIPASS_API_KEY: test-unused
+      JWT_SECRET: e2e-secret-at-least-32-chars-long-abc
+      ENV: test
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/customs_e2e
+      E2E_API_URL: http://localhost:8000
+      E2E_WEB_URL: http://localhost:3000
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r api/requirements.txt
+          pip install 'pydantic[email]'
+
+      - name: Install Playwright chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Install web deps
+        working-directory: web
+        run: npm ci
+
+      - name: Build web
+        working-directory: web
+        run: npm run build
+
+      - name: Apply DB migrations
+        run: alembic -c api/alembic.ini upgrade head
+
+      - name: Start FastAPI (background)
+        run: |
+          nohup python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 \
+            > /tmp/api.log 2>&1 &
+          echo "API_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Start Next.js (background)
+        working-directory: web
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/web.log 2>&1 &
+          echo "WEB_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for API + Web ready
+        run: |
+          for url in http://localhost:8000/health http://localhost:3000/; do
+            for i in $(seq 1 30); do
+              if curl -sf "$url" > /dev/null; then
+                echo "ready: $url"
+                break
+              fi
+              sleep 2
+            done
+          done
+          curl -sf http://localhost:8000/health || (echo "API 실패"; cat /tmp/api.log; exit 1)
+          curl -sf http://localhost:3000/ > /dev/null || (echo "WEB 실패"; cat /tmp/web.log; exit 1)
+
+      - name: Run E2E tests
+        run: python -m pytest tests/e2e/ -m e2e -v --tb=short
+
+      - name: Dump server logs on failure
+        if: failure()
+        run: |
+          echo "===== API log ====="
+          cat /tmp/api.log || true
+          echo "===== WEB log ====="
+          cat /tmp/web.log || true

@@ -1,0 +1,57 @@
+name: CLIP live scrape
+
+# 실제 CLIP 포털에 Playwright 로 접근하는 통합 테스트.
+# 사이트 변경 감지 용도이며 기본 CI 와 분리 — 수동 트리거 우선, 나중에 schedule 고려.
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_live:
+        description: "강제 skip (preflight 테스트만 돌리고 싶을 때)"
+        required: false
+        default: "false"
+
+  # 일일 1회 KST 새벽 3시 실행. CI 러너 비용·사이트 부담 고려해 스케줄은 최소.
+  # 비활성화하려면 schedule 블록을 주석 처리.
+  schedule:
+    - cron: "0 18 * * *"  # UTC 18:00 == KST 03:00
+
+concurrency:
+  group: clip-live
+  cancel-in-progress: false  # 겹치는 실행이 있어도 기존 완료 대기 (사이트 부담)
+
+jobs:
+  clip-live:
+    name: CLIP 포털 스크래퍼 실 사이트 검증
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # schedule 실행은 public fork 에서도 돌지 않도록 기본값 유지.
+    # 수동 workflow_dispatch 입력으로 skip 강제 가능.
+
+    env:
+      SKIP_CLIP_LIVE: ${{ inputs.skip_live || 'false' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r api/requirements.txt
+          pip install 'pydantic[email]'
+
+      - name: Install Playwright browsers (chromium)
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run CLIP live tests
+        run: |
+          python -m pytest tests/integration_clip/ \
+            -m clip_live \
+            -v --tb=short

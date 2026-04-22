@@ -56,3 +56,9 @@ quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
 docstring-code-format = false
+
+[tool.pytest.ini_options]
+markers = [
+  "clip_live: 실제 CLIP 포털에 Playwright/HTTP 로 접근하는 느린 통합 테스트. 기본 CI 에서 제외(--ignore=tests/integration_clip). 수동 실행: `python -m pytest tests/integration_clip/ -m clip_live -v`",
+  "e2e: Next.js 프런트 + FastAPI 백엔드 + pgvector 실 스택에 Playwright 로 접속하는 E2E 테스트. 기본 CI 에서 제외(--ignore=tests/e2e). 실행 조건·runbook: tests/e2e/conftest.py 모듈 docstring 참조",
+]
