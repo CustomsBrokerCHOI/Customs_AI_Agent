@@ -186,7 +186,7 @@
 - [x] Railway 배포 파이프라인 — `railway.toml` (Nixpacks + weasyprint용 libpango/libcairo apt 추가, `startCommand` 로 Alembic 자동 migrate 후 uvicorn, `/health` 헬스체크). `docs/deploy.md` — 1회차 셋업(pgvector 확장 수동 활성 포함)·환경변수 매트릭스·배포 흐름·PDF 시스템 의존·프런트엔드 분리 배포·트러블슈팅 10종·운영 승격 체크리스트 (2026-04-22)
 - [x] PostgreSQL 백업·복구 절차 — `docs/backup-recovery.md` — RPO 24h/RTO 2h 기준, Railway 자동 스냅샷 + pg_dump → S3 외부 사본 2중화, 복구 3 시나리오(단일레코드/전체/Railway 장애) 플레이북, 분기별 DR 훈련 체크리스트, 관세법 제12조 5년 보존 요건 명시 (2026-04-22)
 - [x] HS Code 개정(5년 주기) 대응 — 감지: `ClipScraper.list_available_hsk_years()` (해설서 페이지 연도 드롭다운 파싱) + `scripts/detect_hsk_version.py` (CLIP 관측 vs DB max(hsk_year) 비교, 신버전 시 exit 2 + stderr alert, cron 훅 가능). 전파: `ClassifyInput.hsk_year` 추가 + router 가 `ClassifyJob.hsk_year` 를 엔진에 전달, `_build_sync_bundle_callable` 이 `fetch_note_bundle(..., hsk_year=...)` 로 라우팅 (듀얼 운영 기반). 런북: `docs/hsk-version-migration.md` (감지→스크래핑→적재→재임베딩→듀얼 운영→deprecation 7단계, 롤백 시나리오, 2027 HSK 기준 소요·비용 추산 ~$0.13/1~2 근무일). **미포함**: 자동 스크래핑·재임베딩 오케스트레이션 (수동 런북) + Slack/이메일 알림 (stderr → GitHub Actions output 은 가능). 15 단위 테스트 (2026-04-22)
-- [ ] 모니터링 대시보드 (분류 정확도, 처리 시간, LLM 토큰 비용) — 후속 (data/usage/ 집계 뷰 + Grafana/Metabase)
+- [~] 모니터링 대시보드 — CLI MVP 완료 (`scripts/usage_report.py`, 2026-04-22): `data/usage/YYYYMMDD.jsonl` 범위 로드 → `UsageReport` 집계 (이벤트 수·완료/중단·엔진 분포·`stopped_at` 분포·토큰 합계/평균·비용 추정 Sonnet 4.6 단가·사용자 Top-N). `--days/--since/--until/--format text|json/--top-users` 옵션. 16 단위 테스트. **후속**: 분류 정확도(관세사 확인률) 지표, Grafana/Metabase 대시보드, 엔진 믹스 정확 비용 (OpenAI 임베딩/Claude 분리).
 
 ## 결정 보류 항목 (TBD)
 
