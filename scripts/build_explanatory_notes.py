@@ -33,7 +33,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from scripts.build_tariff_rates import parse_chapter_range
+from scripts.build_tariff_rates import _prevent_windows_sleep, parse_chapter_range
 from scripts.clip_scraper import ClipScrapeError, ClipScraper
 
 logger = logging.getLogger(__name__)
@@ -102,7 +102,9 @@ def scrape_notes(
     t0 = time.monotonic()
     stats = {"hit": 0, "empty": 0, "cached": 0, "fail": 0}
 
-    with ClipScraper(headless=True, rate_limit_sec=rate_limit_sec) as scraper:
+    with _prevent_windows_sleep(), ClipScraper(
+        headless=True, rate_limit_sec=rate_limit_sec
+    ) as scraper:
         for i, heading in enumerate(headings, 1):
             cache_path = _note_cache_path(heading)
             if cache_path.exists():

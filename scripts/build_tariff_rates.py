@@ -30,6 +30,7 @@ import json
 import logging
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable
@@ -41,6 +42,37 @@ from scripts.clip_scraper import ClipScrapeError, ClipScraper, TariffLine
 logger = logging.getLogger(__name__)
 
 TARIFF_CACHE_DIR = Path("data") / "cache" / "tariff"
+
+
+# Windows SetThreadExecutionState flags
+_ES_CONTINUOUS = 0x80000000
+_ES_SYSTEM_REQUIRED = 0x00000001
+
+
+@contextmanager
+def _prevent_windows_sleep():
+    """Windows 에서만 적용. 장시간 스크래핑 중 자동 sleep 방지."""
+    if sys.platform != "win32":
+        yield
+        return
+    try:
+        import ctypes  # type: ignore[import-not-found]
+
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED
+        )
+        logger.info("Windows 자동 sleep 억제 활성화 (SetThreadExecutionState)")
+    except Exception:  # noqa: BLE001
+        logger.warning("자동 sleep 억제 실패 — 노트북 전원옵션 수동으로 확인하세요")
+    try:
+        yield
+    finally:
+        try:
+            import ctypes  # type: ignore[import-not-found]
+
+            ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def parse_chapter_range(spec: str) -> list[int]:
@@ -94,7 +126,9 @@ def scrape_range(
     t0 = time.monotonic()
     stats = {"hit": 0, "miss": 0, "cached": 0, "fail": 0}
 
-    with ClipScraper(headless=True, rate_limit_sec=rate_limit_sec) as scraper:
+    with _prevent_windows_sleep(), ClipScraper(
+        headless=True, rate_limit_sec=rate_limit_sec
+    ) as scraper:
         for chapter in chapters:
             if chapter in skip:
                 print(f"[SKIP] chapter {chapter:02d}", flush=True)
@@ -123,14 +157,28 @@ def scrape_range(
                             break
                     continue
 
-                try:
-                    rows = scraper.fetch_tariff_schedule(
-                        heading, result_timeout_ms=result_timeout_ms
-                    )
-                except ClipScrapeError:
-                    rows = []
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception("스크래핑 실패 heading=%s", heading)
+                # transient 실패가 legit empty 로 오염되는 것 방지 — 1회 재시도.
+                rows: list | None = None
+                for attempt in range(2):
+                    try:
+                        rows = scraper.fetch_tariff_schedule(
+                            heading, result_timeout_ms=result_timeout_ms
+                        )
+                        break
+                    except ClipScrapeError:
+                        if attempt == 0:
+                            time.sleep(3)  # 짧은 대기 후 1회 retry
+                            continue
+                        rows = []  # 두 번째도 실패 — legit empty 로 간주
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "스크래핑 예외 heading=%s attempt=%s", heading, attempt
+                        )
+                        if attempt == 0:
+                            time.sleep(5)  # 네트워크 문제면 조금 더 대기
+                            continue
+                        rows = None  # 최종 실패 — 캐시하지 않음
+                if rows is None:
                     stats["fail"] += 1
                     continue
 
