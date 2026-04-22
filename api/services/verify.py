@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass, field
 
 from api.services.hs_sections import chapters_from_romans
-from api.services.search import HSCandidate, SearchResult, SectionCandidate
+from api.services.search import HSCandidate, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +53,7 @@ class VerificationResult:
 # ---- 단위 판정 ----
 
 
-def verify_heading(
-    heading: str, allowed_chapters: frozenset[int] | set[int]
-) -> tuple[bool, str]:
+def verify_heading(heading: str, allowed_chapters: frozenset[int] | set[int]) -> tuple[bool, str]:
     """heading 4자리가 ``allowed_chapters`` 에 속하는지 판정.
 
     :returns: ``(ok, reason)``. ``ok=True`` 이면 ``reason`` 은 빈 문자열.

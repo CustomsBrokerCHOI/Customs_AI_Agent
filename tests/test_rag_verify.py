@@ -26,18 +26,17 @@ from api.services.rag_verify import (
 )
 from api.services.search import HSCandidate
 
-
 # ---- 헬퍼 ----
 
 
 def _features(**kw) -> ProductFeatures:
-    defaults = dict(
-        product_name_normalized="노트북",
-        materials=[],
-        functions=[],
-        confidence=0.8,
-        follow_up_questions=[],
-    )
+    defaults = {
+        "product_name_normalized": "노트북",
+        "materials": [],
+        "functions": [],
+        "confidence": 0.8,
+        "follow_up_questions": [],
+    }
     defaults.update(kw)
     return ProductFeatures(**defaults)
 
@@ -57,9 +56,18 @@ def _bundle_8471() -> NoteBundle:
         heading="8471",
         hsk_year=2022,
         notes={
-            ("general_rule", "ko"): "관세율표 해석에 관한 통칙은 다음과 같다. 제1호부터 순차로 적용한다.",
-            ("heading_note", "ko"): "이 호에는 휴대용 자동자료처리기계로서 중량 10킬로그램 이하의 것을 포함한다.",
-            ("chapter_note", "ko"): "이 류에는 다음 각 목의 물품은 제외한다. 가. 기계의 부분품은 제84.31호로 분류한다.",
+            (
+                "general_rule",
+                "ko",
+            ): "관세율표 해석에 관한 통칙은 다음과 같다. 제1호부터 순차로 적용한다.",
+            (
+                "heading_note",
+                "ko",
+            ): "이 호에는 휴대용 자동자료처리기계로서 중량 10킬로그램 이하의 것을 포함한다.",
+            (
+                "chapter_note",
+                "ko",
+            ): "이 류에는 다음 각 목의 물품은 제외한다. 가. 기계의 부분품은 제84.31호로 분류한다.",
         },
     )
 
@@ -173,7 +181,9 @@ def test_guard_downgrades_match_when_all_matched_unverified() -> None:
         verdict="match",
         confidence=0.8,
         matched_clauses=[
-            CitationRef(source_kind="heading_note", heading="8471", excerpt="존재하지 않는 인용문자열"),
+            CitationRef(
+                source_kind="heading_note", heading="8471", excerpt="존재하지 않는 인용문자열"
+            ),
         ],
         conflicting_clauses=[],
         reasoning="x",
@@ -192,7 +202,9 @@ def test_guard_keeps_match_when_any_verified() -> None:
         verdict="match",
         confidence=0.8,
         matched_clauses=[
-            CitationRef(source_kind="heading_note", heading="8471", excerpt="휴대용 자동자료처리기계"),
+            CitationRef(
+                source_kind="heading_note", heading="8471", excerpt="휴대용 자동자료처리기계"
+            ),
             CitationRef(source_kind="heading_note", heading="8471", excerpt="환각 인용"),
         ],
         conflicting_clauses=[],
@@ -340,9 +352,7 @@ async def test_verify_candidate_empty_bundle_returns_uncertain_without_llm() -> 
     client.messages.create = AsyncMock()  # 호출되면 안 됨
     empty_bundle = NoteBundle(heading="9999", hsk_year=2022)
 
-    out = await verify_candidate(
-        _features(), _candidate("9999"), empty_bundle, client=client
-    )
+    out = await verify_candidate(_features(), _candidate("9999"), empty_bundle, client=client)
     assert out.verdict == "uncertain"
     assert out.confidence == 0.0
     assert client.messages.create.await_count == 0

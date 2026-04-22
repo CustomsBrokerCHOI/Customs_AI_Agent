@@ -21,7 +21,6 @@ from scripts.build_index import (
     upsert_cases_from_jsonl,
 )
 
-
 # ---- _parse_decision_date ----
 
 

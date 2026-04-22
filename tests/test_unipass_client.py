@@ -46,9 +46,7 @@ def test_get_api_key_raises_when_unknown(monkeypatch: pytest.MonkeyPatch) -> Non
         client.get_api_key("unknownSvc")
 
 
-def test_cache_path_is_deterministic(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_cache_path_is_deterministic(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("UNIPASS_API_KEY", "k")
     client = UnipassClient(cache_dir=tmp_path)
     p1 = client._cache_path("svc", "op", {"a": "1", "b": "2"})
@@ -66,9 +64,7 @@ def test_daily_limits_requires_usage_log_dir(
         UnipassClient(daily_limits={"svc": 10})
 
 
-def test_usage_logging_and_limit_block(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_usage_logging_and_limit_block(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("UNIPASS_API_KEY", "k")
     client = UnipassClient(
         usage_log_dir=tmp_path,
@@ -82,9 +78,7 @@ def test_usage_logging_and_limit_block(
         client.check_daily_limit("svcA")
 
 
-def test_unlimited_service_bypasses_check(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_unlimited_service_bypasses_check(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("UNIPASS_API_KEY", "k")
     client = UnipassClient(
         usage_log_dir=tmp_path,
@@ -135,7 +129,7 @@ _SUCCESS_XML = (
     "<korePrnm>휴대용 자동자료처리기기</korePrnm>"
     "</hsSgnSrchRsltVo>"
     "</hsSgnSrchRtnVo>"
-).encode("utf-8")
+).encode()
 
 
 def _make_client_with_mock(
@@ -171,9 +165,7 @@ def test_call_parses_success_response_and_injects_auth_key(
     assert call_kwargs.kwargs["params"]["hsSgn"] == "8471300000"
 
 
-def test_call_raises_on_http_error(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_call_raises_on_http_error(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     client, _ = _make_client_with_mock(
         monkeypatch,
         _FakeResponse(b"", status_code=503),
@@ -183,9 +175,7 @@ def test_call_raises_on_http_error(
         client.call("svc", "op")
 
 
-def test_call_raises_on_malformed_xml(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_call_raises_on_malformed_xml(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     client, _ = _make_client_with_mock(
         monkeypatch,
         _FakeResponse(b"<broken xml"),
@@ -198,13 +188,8 @@ def test_call_raises_on_malformed_xml(
 def test_call_raises_on_business_error_with_err_msg(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    xml = (
-        "<root><tCnt>-1</tCnt>"
-        "<errMsgCn>인증키 오류</errMsgCn></root>"
-    ).encode("utf-8")
-    client, _ = _make_client_with_mock(
-        monkeypatch, _FakeResponse(xml), usage_log_dir=tmp_path
-    )
+    xml = ("<root><tCnt>-1</tCnt><errMsgCn>인증키 오류</errMsgCn></root>").encode()
+    client, _ = _make_client_with_mock(monkeypatch, _FakeResponse(xml), usage_log_dir=tmp_path)
     with pytest.raises(UnipassError, match="인증키 오류"):
         client.call("svc", "op")
 
@@ -212,20 +197,13 @@ def test_call_raises_on_business_error_with_err_msg(
 def test_call_falls_back_to_ntce_info_when_no_err_msg(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    xml = (
-        "<root><tCnt>-2</tCnt>"
-        "<ntceInfo>조회 결과 없음</ntceInfo></root>"
-    ).encode("utf-8")
-    client, _ = _make_client_with_mock(
-        monkeypatch, _FakeResponse(xml), usage_log_dir=tmp_path
-    )
+    xml = ("<root><tCnt>-2</tCnt><ntceInfo>조회 결과 없음</ntceInfo></root>").encode()
+    client, _ = _make_client_with_mock(monkeypatch, _FakeResponse(xml), usage_log_dir=tmp_path)
     with pytest.raises(UnipassError, match="조회 결과 없음"):
         client.call("svc", "op")
 
 
-def test_call_writes_cache_on_success(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_call_writes_cache_on_success(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     cache_dir = tmp_path / "cache"
     usage_dir = tmp_path / "usage"
     client, mock_session = _make_client_with_mock(
@@ -267,9 +245,7 @@ def test_call_uses_cache_on_second_call_and_logs_hit(
     assert [e["cache_hit"] for e in entries] == [False, True]
 
 
-def test_call_force_refresh_bypasses_cache(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_call_force_refresh_bypasses_cache(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     cache_dir = tmp_path / "cache"
     usage_dir = tmp_path / "usage"
     client, mock_session = _make_client_with_mock(
@@ -298,9 +274,7 @@ def test_call_use_cache_false_skips_cache_read_and_write(
     assert list(cache_dir.glob("*.xml")) == []
 
 
-def test_call_blocks_when_daily_limit_exceeded(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_call_blocks_when_daily_limit_exceeded(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     usage_dir = tmp_path / "usage"
     client, mock_session = _make_client_with_mock(
         monkeypatch,

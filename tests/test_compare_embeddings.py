@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -19,7 +20,6 @@ from scripts.compare_embeddings import (
     normalize,
     top_k_indices,
 )
-
 
 # ---- normalize ----
 
@@ -81,9 +81,7 @@ def _fake_embeddings_response(vectors: list[list[float]]) -> SimpleNamespace:
 
 def test_openai_backend_calls_with_correct_model_and_dim() -> None:
     client = MagicMock()
-    client.embeddings.create.return_value = _fake_embeddings_response(
-        [[0.1] * 1536, [0.2] * 1536]
-    )
+    client.embeddings.create.return_value = _fake_embeddings_response([[0.1] * 1536, [0.2] * 1536])
     backend = OpenAIBackend(client=client, batch_size=10)
     out = backend.embed(["a", "b"])
     assert isinstance(out, np.ndarray)
@@ -144,9 +142,7 @@ class _DummyBackend:
         self._mapping = mapping
 
     def embed(self, texts):
-        return np.array(
-            [self._mapping[t] for t in texts], dtype=np.float32
-        )
+        return np.array([self._mapping[t] for t in texts], dtype=np.float32)
 
 
 def test_evaluate_computes_correct_ranks_and_recall() -> None:

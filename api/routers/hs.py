@@ -28,15 +28,11 @@ async def get_hs_detail(
     인증 필요 (관세사 전용 데이터).
     """
     result = await db.execute(
-        select(HSCode)
-        .options(selectinload(HSCode.tariff_rates))
-        .where(HSCode.hs_code == hs_code)
+        select(HSCode).options(selectinload(HSCode.tariff_rates)).where(HSCode.hs_code == hs_code)
     )
     hs = result.scalar_one_or_none()
     if hs is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="HS 부호 없음"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="HS 부호 없음")
 
     return HSDetail(
         hs_code=hs.hs_code,

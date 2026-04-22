@@ -23,7 +23,6 @@ import argparse
 import io
 import logging
 import sys
-from pathlib import Path
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, func, select
@@ -40,9 +39,7 @@ def db_max_hsk_year(database_url: str) -> int | None:
     """``explanatory_notes.hsk_year`` 의 현재 최대값. 테이블이 비어있으면 None."""
     engine = create_engine(_sync_db_url(database_url), pool_pre_ping=True)
     with Session(engine) as session:
-        row = session.execute(
-            select(func.max(ExplanatoryNote.hsk_year))
-        ).scalar_one()
+        row = session.execute(select(func.max(ExplanatoryNote.hsk_year))).scalar_one()
     return int(row) if row is not None else None
 
 
@@ -54,9 +51,7 @@ def probe_clip_years() -> list[int]:
         return scraper.list_available_hsk_years()
 
 
-def compare(
-    db_max: int | None, clip_years: list[int]
-) -> tuple[bool, list[int], int | None]:
+def compare(db_max: int | None, clip_years: list[int]) -> tuple[bool, list[int], int | None]:
     """CLIP 관측 연도 중 DB 최대값을 초과하는 것이 있으면 신버전으로 판단.
 
     :returns: ``(new_version_detected, unseen_years, latest_clip)``.

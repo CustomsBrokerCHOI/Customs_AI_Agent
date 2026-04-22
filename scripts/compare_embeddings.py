@@ -39,9 +39,10 @@ import io
 import json
 import logging
 import sys
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol
 
 import numpy as np
 from dotenv import load_dotenv
@@ -124,8 +125,7 @@ class BgeM3Backend:
             from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError(
-                "bge 백엔드는 sentence-transformers 필요: "
-                "pip install 'sentence-transformers>=2.7'"
+                "bge 백엔드는 sentence-transformers 필요: pip install 'sentence-transformers>=2.7'"
             ) from exc
         logger.info("bge 모델 로드 중: %s", model_name)
         self._model = SentenceTransformer(model_name)
@@ -213,7 +213,9 @@ def evaluate(
     k: int,
 ) -> BackendResult:
     """한 백엔드로 chunk + query 임베딩 후 top-K heading rank 계산."""
-    print(f"\n[{backend.name}] chunks={len(chunks_texts)} queries={len(eval_records)} dim={backend.dim}")
+    print(
+        f"\n[{backend.name}] chunks={len(chunks_texts)} queries={len(eval_records)} dim={backend.dim}"
+    )
     chunk_vecs = normalize(backend.embed(chunks_texts))
     query_vecs = normalize(backend.embed([r.query for r in eval_records]))
 

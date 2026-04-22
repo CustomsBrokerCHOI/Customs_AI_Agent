@@ -66,11 +66,9 @@ def probe(
         previous_text = path.read_text(encoding="utf-8")
     else:
         # 오늘자 파일이 없으므로 가장 최근 과거 파일
-        older = [p for p in sorted(out_dir.glob("*.txt"))]
+        older = sorted(out_dir.glob("*.txt"))
         previous_path = older[-1] if older else None
-        previous_text = (
-            previous_path.read_text(encoding="utf-8") if previous_path else None
-        )
+        previous_text = previous_path.read_text(encoding="utf-8") if previous_path else None
 
     content = fetch_robots(url, user_agent)
     path.write_text(content, encoding="utf-8")
@@ -119,9 +117,7 @@ def main() -> int:
         print("[CHANGED] 이전 프로브와 차이:")
         for line in diff:
             print(line)
-        print(
-            "\n→ docs/scraping-policy.md 의 '확인된 지침' 섹션을 갱신하세요."
-        )
+        print("\n→ docs/scraping-policy.md 의 '확인된 지침' 섹션을 갱신하세요.")
         return 2
 
     print("[NO-CHANGE] 이전 프로브와 동일.")

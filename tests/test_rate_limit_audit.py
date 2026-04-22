@@ -23,7 +23,6 @@ from api.services.rate_limit import (
     seconds_until_utc_midnight,
 )
 
-
 # ---- seconds_until_utc_midnight ----
 
 
@@ -90,9 +89,7 @@ async def test_check_rate_limit_allowed_when_under_quota() -> None:
     db.execute = AsyncMock(return_value=result)
 
     now = datetime(2026, 4, 22, 12, 0, 0, tzinfo=timezone.utc)
-    allowed, used, retry = await check_classify_rate_limit(
-        db, uuid.uuid4(), limit=100, now=now
-    )
+    allowed, used, retry = await check_classify_rate_limit(db, uuid.uuid4(), limit=100, now=now)
     assert allowed is True
     assert used == 3
     assert retry == 0
@@ -106,9 +103,7 @@ async def test_check_rate_limit_blocked_at_quota() -> None:
     db.execute = AsyncMock(return_value=result)
 
     now = datetime(2026, 4, 22, 18, 0, 0, tzinfo=timezone.utc)
-    allowed, used, retry = await check_classify_rate_limit(
-        db, uuid.uuid4(), limit=100, now=now
-    )
+    allowed, used, retry = await check_classify_rate_limit(db, uuid.uuid4(), limit=100, now=now)
     assert allowed is False
     assert used == 100
     assert retry == 6 * 3600  # UTC 자정까지 6시간

@@ -16,7 +16,6 @@ from scripts.build_embeddings import (
     estimate_cost,
 )
 
-
 # ---- estimate_cost ----
 
 

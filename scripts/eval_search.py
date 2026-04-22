@@ -131,9 +131,7 @@ def load_eval_set(path: Path) -> list[EvalRecord]:
 # ---- 검색 ----
 
 
-def search_headings(
-    session: Session, query_vec: list[float], k: int
-) -> list[str]:
+def search_headings(session: Session, query_vec: list[float], k: int) -> list[str]:
     """쿼리 임베딩으로 note_chunks cosine 검색, 매칭 heading 목록 반환 (rank 순)."""
     stmt = (
         select(
@@ -170,7 +168,7 @@ def run_eval(
     # 2) 각 쿼리에 대해 pgvector 검색 + rank 계산
     per_q: list[PerQueryResult] = []
     ranks: list[int | None] = []
-    for rec, vec in zip(eval_records, vectors):
+    for rec, vec in zip(eval_records, vectors, strict=True):
         retrieved = search_headings(session, vec, k)
         rnk = rank_of_first_hit(retrieved, rec.gt_heading)
         ranks.append(rnk)
@@ -211,7 +209,9 @@ def print_summary(s: EvalSummary) -> None:
     if misses:
         print(f"\n[MISSES] {len(misses)} 건:")
         for m in misses[:10]:
-            print(f"  {m.id} gt={m.gt_heading} retrieved={m.retrieved_headings[:5]} | {m.query[:60]}")
+            print(
+                f"  {m.id} gt={m.gt_heading} retrieved={m.retrieved_headings[:5]} | {m.query[:60]}"
+            )
         if len(misses) > 10:
             print(f"  ... (+{len(misses) - 10} more)")
 

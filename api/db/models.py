@@ -41,25 +41,20 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from api.db.base import Base
 
-
 # ---------- 인증 / 감사 ----------
 
 
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
     name: Mapped[str | None] = mapped_column(String(100))
     password_hash: Mapped[str] = mapped_column(String(200), nullable=False)
     role: Mapped[str] = mapped_column(String(20), default="broker", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # 브루트포스 방어 (Phase 5-B) — api/services/account_lock.py 가 관리
-    failed_login_count: Mapped[int] = mapped_column(
-        Integer, default=0, nullable=False
-    )
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -71,9 +66,7 @@ class User(Base):
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
@@ -119,9 +112,7 @@ class TariffRate(Base):
 
     __tablename__ = "tariff_rates"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     hs_code: Mapped[str] = mapped_column(
         CHAR(10), ForeignKey("hs_codes.hs_code", ondelete="CASCADE"), nullable=False
     )
@@ -137,9 +128,7 @@ class TariffRate(Base):
     hs: Mapped[HSCode] = relationship(back_populates="tariff_rates")
 
     __table_args__ = (
-        UniqueConstraint(
-            "hs_code", "fta_code", "apply_start", name="uq_tariff_hs_fta_start"
-        ),
+        UniqueConstraint("hs_code", "fta_code", "apply_start", name="uq_tariff_hs_fta_start"),
         Index("idx_tariff_lookup", "hs_code", "fta_code"),
     )
 
@@ -152,11 +141,11 @@ class ExplanatoryNote(Base):
 
     __tablename__ = "explanatory_notes"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     heading: Mapped[str] = mapped_column(CHAR(4), nullable=False, index=True)
-    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # general_rule/section_note/chapter_note/heading_note
+    kind: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # general_rule/section_note/chapter_note/heading_note
     lang: Mapped[str] = mapped_column(String(2), nullable=False)  # ko / en
     hsk_year: Mapped[int] = mapped_column(Integer, nullable=False, default=2022)
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -179,9 +168,7 @@ class NoteChunk(Base):
 
     __tablename__ = "note_chunks"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     note_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("explanatory_notes.id", ondelete="CASCADE"),
@@ -205,9 +192,7 @@ class ClassificationCase(Base):
 
     __tablename__ = "classification_cases"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     hs_code: Mapped[str | None] = mapped_column(
         CHAR(10), ForeignKey("hs_codes.hs_code", ondelete="SET NULL"), index=True
     )
@@ -230,9 +215,7 @@ class ClassifyJob(Base):
 
     __tablename__ = "classify_jobs"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
@@ -281,6 +264,4 @@ class EmbeddingVersion(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    __table_args__ = (
-        UniqueConstraint("model_name", "model_version", name="uq_emb_model_version"),
-    )
+    __table_args__ = (UniqueConstraint("model_name", "model_version", name="uq_emb_model_version"),)

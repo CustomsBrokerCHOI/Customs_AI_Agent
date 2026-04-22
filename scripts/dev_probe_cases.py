@@ -19,7 +19,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from scripts.clip_scraper import ClipScraper, ClipScrapeError
+from scripts.clip_scraper import ClipScrapeError, ClipScraper
 
 CACHE_DIR = Path("data") / "cache"
 RAW_DIR = Path("data") / "raw" / "clip"

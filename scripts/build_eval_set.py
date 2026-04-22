@@ -39,8 +39,8 @@ import logging
 import random
 import sys
 from collections import defaultdict
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -122,9 +122,7 @@ def load_clip_cases(paths: Iterable[Path]) -> list[dict]:
     return cases
 
 
-def stratified_sample(
-    cases: list[dict], count: int, seed: int
-) -> list[dict]:
+def stratified_sample(cases: list[dict], count: int, seed: int) -> list[dict]:
     """heading(4자리) 별 stratified 샘플. 헤딩당 1건 우선, 부족하면 오버샘플.
 
     결정 규칙:
@@ -188,9 +186,7 @@ def clip_cases_to_records(cases: list[dict]) -> list[EvalRecord]:
 
 def load_manual_records(path: Path) -> list[EvalRecord]:
     if not path.exists():
-        logger.warning(
-            "수기 라벨 파일 없음 (%s). CLIP 만으로 평가셋 생성.", path
-        )
+        logger.warning("수기 라벨 파일 없음 (%s). CLIP 만으로 평가셋 생성.", path)
         return []
     records: list[EvalRecord] = []
     with path.open("r", encoding="utf-8") as f:

@@ -11,7 +11,6 @@ from api.core.security import (
     validate_password_strength,
 )
 
-
 # ---- 합격 케이스 ----
 
 
@@ -85,16 +84,12 @@ def test_register_request_rejects_weak_password() -> None:
     from api.schemas.auth import RegisterRequest
 
     with pytest.raises(ValidationError):
-        RegisterRequest(
-            email="broker@example.com", password="alllowercase", name="x"
-        )
+        RegisterRequest(email="broker@example.com", password="alllowercase", name="x")
 
 
 def test_register_request_accepts_strong_password() -> None:
     pytest.importorskip("email_validator")
     from api.schemas.auth import RegisterRequest
 
-    req = RegisterRequest(
-        email="broker@example.com", password="StrongPass1!", name="관세사"
-    )
+    req = RegisterRequest(email="broker@example.com", password="StrongPass1!", name="관세사")
     assert req.password == "StrongPass1!"

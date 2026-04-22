@@ -23,9 +23,7 @@ from scripts.data_manager import DataManager
 from scripts.unipass_client import UnipassClient, UnipassError, _configure_logging
 
 
-def build_master_row(
-    client: UnipassClient, hs_code: str
-) -> dict[str, str | None] | None:
+def build_master_row(client: UnipassClient, hs_code: str) -> dict[str, str | None] | None:
     """단일 HS 코드에 대한 master row 구성. 한/영 이중 호출."""
     kr_rows = client.search_hs_sgn(hs_code, koen_tp="1")
     en_rows = client.search_hs_sgn(hs_code, koen_tp="2")

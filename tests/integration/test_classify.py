@@ -6,10 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from api.db.models import ClassifyJob
-
 
 # ---- 공용 헬퍼 ----
 
@@ -77,9 +74,7 @@ def test_create_classify_rejects_short_product_name(authed_client) -> None:
     assert r.status_code == 422
 
 
-def test_create_classify_returns_202_and_records_audit(
-    authed_client, monkeypatch
-) -> None:
+def test_create_classify_returns_202_and_records_audit(authed_client, monkeypatch) -> None:
     client, db, user = authed_client
     _rate_limit_ok(db, count=5)  # 한도 미달
 
@@ -244,9 +239,7 @@ def test_review_404_for_other_owner(authed_client) -> None:
     job = _make_job(uuid.uuid4(), status="complete")
     db.get = AsyncMock(return_value=job)
 
-    r = client.post(
-        f"/classify/{job.id}/review", json={"rejected": True}
-    )
+    r = client.post(f"/classify/{job.id}/review", json={"rejected": True})
     assert r.status_code == 404
 
 
@@ -318,9 +311,7 @@ def test_report_pdf_501_when_weasyprint_missing(authed_client, monkeypatch) -> N
     assert "weasyprint" in r.json()["detail"]
 
 
-def test_report_pdf_200_when_weasyprint_mocked(
-    authed_client, monkeypatch
-) -> None:
+def test_report_pdf_200_when_weasyprint_mocked(authed_client, monkeypatch) -> None:
     client, db, user = authed_client
     job = _make_job(user.id, status="complete")
     db.get = AsyncMock(return_value=job)

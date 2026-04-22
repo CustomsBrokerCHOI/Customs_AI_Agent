@@ -25,7 +25,7 @@
 - [x] `scripts/__init__.py` 패키지화
 - [x] `.env.example` 작성 (`UNIPASS_API_KEY`, `LOG_LEVEL` 등)
 - [x] `.gitignore` 보강 (`.env`, `__pycache__/`, `data/raw/`, `reports/*.html`)
-- [ ] `pyproject.toml` 또는 `setup.cfg` 로 lint/format 도구 통합 (ruff, black)
+- [x] `pyproject.toml` 로 lint/format 도구 통합 (ruff) — line-length 100, target-version py310, select E/W/F/I/B/UP/C4/SIM, per-file-ignores (tests/ E402·B018, scripts/ E402), isort 첫 써드파티 `api/scripts/tests` 설정. ruff check 0 위반 (74건 정리: 자동 fix 61 + B905 strict=True 7건 + C408 dict→literal 4건 + C416 + F821 Any import + UP035 deprecated imports). ruff format 일회성 적용으로 54 파일 통일. CI `lint` job 은 기존대로 informational 유지 (2026-04-22)
 
 ## Phase 1 — 데이터 수집부
 

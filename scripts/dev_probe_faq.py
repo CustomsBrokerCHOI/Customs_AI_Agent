@@ -19,7 +19,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from scripts.clip_scraper import ClipScraper, ClipScrapeError
+from scripts.clip_scraper import ClipScrapeError, ClipScraper
 
 CACHE_DIR = Path("data") / "cache"
 RAW_DIR = Path("data") / "raw" / "clip"
@@ -41,10 +41,7 @@ def main() -> int:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = CACHE_DIR / f"clip_faq_{_safe(args.query)}_{ts}.jsonl"
 
-    print(
-        f"[FETCH] query={args.query!r} max_pages={args.max_pages} "
-        f"detail={not args.no_detail}"
-    )
+    print(f"[FETCH] query={args.query!r} max_pages={args.max_pages} detail={not args.no_detail}")
     try:
         with ClipScraper(
             headless=not args.headed,
@@ -70,19 +67,14 @@ def main() -> int:
     print(f"\n[SAVED] {out_path} ({len(entries)} 건)")
     if entries:
         first = entries[0]
-        print(
-            f"[PREVIEW] id={first.faq_id} cat={first.category} "
-            f"q={first.question[:40]}"
-        )
+        print(f"[PREVIEW] id={first.faq_id} cat={first.category} q={first.question[:40]}")
         if first.answer:
             print(f"  answer: {first.answer[:120]}...")
     return 0
 
 
 def _safe(s: str) -> str:
-    return "".join(
-        c if c.isalnum() or "가" <= c <= "힣" else "_" for c in s
-    )[:20] or "q"
+    return "".join(c if c.isalnum() or "가" <= c <= "힣" else "_" for c in s)[:20] or "q"
 
 
 if __name__ == "__main__":

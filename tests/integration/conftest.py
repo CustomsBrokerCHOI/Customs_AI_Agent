@@ -26,10 +26,7 @@ from fastapi.testclient import TestClient
 from api.db.models import User
 from api.db.session import get_db
 from api.deps import get_current_user
-from api.routers import classify as classify_router
-from api.routers import health as health_router
-from api.routers import hs as hs_router
-
+from api.routers import classify as classify_router, health as health_router, hs as hs_router
 
 # ---- Fake session factory ----
 

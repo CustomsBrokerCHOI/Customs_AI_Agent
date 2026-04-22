@@ -17,7 +17,7 @@ from __future__ import annotations
 import html
 import logging
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any
 
 from api.services.classify_engine import DRAFT_NOTICE
 
@@ -73,7 +73,9 @@ def _render_candidates_table(candidates: list[dict]) -> str:
         name_kr = _esc(c.get("name_kr") or "")
         verdict = _esc(_verdict_label(c.get("verdict")))
         confidence = c.get("confidence")
-        conf_str = f"{round((confidence or 0) * 100, 1)}%" if isinstance(confidence, (int, float)) else ""
+        conf_str = (
+            f"{round((confidence or 0) * 100, 1)}%" if isinstance(confidence, (int, float)) else ""
+        )
         tariff = _esc(c.get("base_tariff_rate") or "—")
         rows.append(
             "<tr>"
@@ -250,12 +252,8 @@ def render_html_report(job: Any) -> str:
     meta = result.get("meta") or {}
 
     reviewed_label = "확인 완료" if reviewed else "미확인"
-    accepted_html = (
-        f"<dt>채택 HS</dt><dd class='mono'>{_esc(accepted)}</dd>" if accepted else ""
-    )
-    notice_block = (
-        f"<p class='notice'>{_esc(notice)}</p>" if notice else ""
-    )
+    accepted_html = f"<dt>채택 HS</dt><dd class='mono'>{_esc(accepted)}</dd>" if accepted else ""
+    notice_block = f"<p class='notice'>{_esc(notice)}</p>" if notice else ""
 
     return f"""<!DOCTYPE html>
 <html lang="ko">
@@ -337,8 +335,6 @@ def render_pdf_report(html_str: str, *, base_url: str | None = None) -> bytes:
 
 def report_filename(job: Any, ext: str) -> str:
     """다운로드 파일명 — 영숫자 + 품명 일부. ASCII-fallback 포함."""
-    pid = str(getattr(job, "id", "")) or (
-        str(job.get("id", "")) if isinstance(job, dict) else ""
-    )
+    pid = str(getattr(job, "id", "")) or (str(job.get("id", "")) if isinstance(job, dict) else "")
     short = pid[:8] if pid else "report"
     return f"classify-{short}.{ext}"

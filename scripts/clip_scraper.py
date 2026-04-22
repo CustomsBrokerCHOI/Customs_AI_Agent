@@ -20,12 +20,13 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Iterable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Iterable
+from typing import Any
 
 from playwright.sync_api import (
     Browser,
@@ -243,7 +244,7 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
         self._page: Page | None = None
         self._last_request_at: float = 0.0
 
-    def __enter__(self) -> "ClipScraper":
+    def __enter__(self) -> ClipScraper:
         self._playwright = sync_playwright().start()
         self._browser = self._playwright.chromium.launch(headless=self.headless)
         self._context = self._browser.new_context(
@@ -290,9 +291,7 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
         self._submit_search(heading_no=heading_no, year=year)
         self._open_detail()
 
-        html_path = self._persist_raw_html(
-            subdir="notes", stem=f"{heading_no}_{year}"
-        )
+        html_path = self._persist_raw_html(subdir="notes", stem=f"{heading_no}_{year}")
 
         note = ExplanatoryNote(
             heading=heading_no,
@@ -363,9 +362,7 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
             page.click(SEL_TARIFF_SUBMIT)
             page.wait_for_selector(f"{SEL_TARIFF_RESULT} tbody tr", timeout=result_timeout_ms)
         except PlaywrightTimeoutError as exc:
-            raise ClipScrapeError(
-                f"관세율표 검색 실패 (heading={heading_no})"
-            ) from exc
+            raise ClipScrapeError(f"관세율표 검색 실패 (heading={heading_no})") from exc
 
         html_path = self._persist_raw_html(subdir="tariffs", stem=heading_no)
 
@@ -439,13 +436,9 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
             page.wait_for_selector(SEL_CASE_INPUT, timeout=self.timeout_ms)
             page.fill(SEL_CASE_INPUT, query)
             page.click(SEL_CASE_SUBMIT)
-            page.wait_for_selector(
-                f"{SEL_CASE_RESULT} tbody tr", timeout=result_timeout_ms
-            )
+            page.wait_for_selector(f"{SEL_CASE_RESULT} tbody tr", timeout=result_timeout_ms)
         except PlaywrightTimeoutError as exc:
-            raise ClipScrapeError(
-                f"품목분류 사례 검색 실패 (query={query!r})"
-            ) from exc
+            raise ClipScrapeError(f"품목분류 사례 검색 실패 (query={query!r})") from exc
 
         cases: list[ClassificationCase] = []
         for page_idx in range(max_pages):
@@ -464,9 +457,7 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
                     try:
                         self._enrich_case_detail(case, row_cells=cells)
                     except PlaywrightTimeoutError:
-                        logger.warning(
-                            "사례 상세 펼침 실패 (case_ref=%s)", case.case_ref
-                        )
+                        logger.warning("사례 상세 펼침 실패 (case_ref=%s)", case.case_ref)
                 cases.append(case)
 
             self._append_manifest(
@@ -488,9 +479,7 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
         self._last_request_at = time.monotonic()
         return cases
 
-    def _parse_case_row(
-        self, cells: list[str], source_url: str
-    ) -> ClassificationCase | None:
+    def _parse_case_row(self, cells: list[str], source_url: str) -> ClassificationCase | None:
         """사례 테이블 한 행을 ``ClassificationCase`` 로 매핑.
 
         잠정 가정: ``[사례번호, 품명, HS부호(10자리), 결정일, 요약]``.
@@ -518,16 +507,14 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
             source_url=source_url,
         )
 
-    def _enrich_case_detail(
-        self, case: ClassificationCase, row_cells: list[str]
-    ) -> None:
+    def _enrich_case_detail(self, case: ClassificationCase, row_cells: list[str]) -> None:
         """사례 상세 레이어 를 펼쳐 결정 이유 등 텍스트 추출."""
         page = self._require_page()
         # 행 클릭: 일반적으로 사례번호 링크
         ref = case.case_ref or (row_cells[0] if row_cells else "")
         if not ref:
             return
-        link = page.query_selector(f"{SEL_CASE_DETAIL_LINK}:has-text(\"{ref}\")")
+        link = page.query_selector(f'{SEL_CASE_DETAIL_LINK}:has-text("{ref}")')
         if link is None:
             # fallback: 첫 dtlInfo 링크
             link = page.query_selector(SEL_CASE_DETAIL_LINK)
@@ -551,9 +538,7 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
             return False
         try:
             next_link.click()
-            page.wait_for_selector(
-                f"{SEL_CASE_RESULT} tbody tr", timeout=self.timeout_ms
-            )
+            page.wait_for_selector(f"{SEL_CASE_RESULT} tbody tr", timeout=self.timeout_ms)
         except PlaywrightTimeoutError:
             return False
         return True
@@ -591,13 +576,9 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
             page.wait_for_selector(SEL_FAQ_INPUT, timeout=self.timeout_ms)
             page.fill(SEL_FAQ_INPUT, query)
             page.click(SEL_FAQ_SUBMIT)
-            page.wait_for_selector(
-                f"{SEL_FAQ_RESULT} tbody tr", timeout=result_timeout_ms
-            )
+            page.wait_for_selector(f"{SEL_FAQ_RESULT} tbody tr", timeout=result_timeout_ms)
         except PlaywrightTimeoutError as exc:
-            raise ClipScrapeError(
-                f"FAQ 검색 실패 (query={query!r})"
-            ) from exc
+            raise ClipScrapeError(f"FAQ 검색 실패 (query={query!r})") from exc
 
         entries: list[FAQEntry] = []
         for page_idx in range(max_pages):
@@ -616,9 +597,7 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
                     try:
                         self._enrich_faq_detail(entry, row_cells=cells)
                     except PlaywrightTimeoutError:
-                        logger.warning(
-                            "FAQ 상세 펼침 실패 (faq_id=%s)", entry.faq_id
-                        )
+                        logger.warning("FAQ 상세 펼침 실패 (faq_id=%s)", entry.faq_id)
                 entries.append(entry)
 
             self._append_manifest(
@@ -640,9 +619,7 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
         self._last_request_at = time.monotonic()
         return entries
 
-    def _parse_faq_row(
-        self, cells: list[str], source_url: str
-    ) -> FAQEntry | None:
+    def _parse_faq_row(self, cells: list[str], source_url: str) -> FAQEntry | None:
         """FAQ 테이블 한 행을 ``FAQEntry`` 로 매핑.
 
         잠정 가정: ``[FAQ번호, 분류, 질문요약, 등록일]``.
@@ -664,15 +641,13 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
             source_url=source_url,
         )
 
-    def _enrich_faq_detail(
-        self, entry: FAQEntry, row_cells: list[str]
-    ) -> None:
+    def _enrich_faq_detail(self, entry: FAQEntry, row_cells: list[str]) -> None:
         """FAQ 상세 레이어 펼쳐 답변 텍스트 추출."""
         page = self._require_page()
         ref = entry.faq_id or (row_cells[0] if row_cells else "")
         if not ref:
             return
-        link = page.query_selector(f"{SEL_FAQ_DETAIL_LINK}:has-text(\"{ref}\")")
+        link = page.query_selector(f'{SEL_FAQ_DETAIL_LINK}:has-text("{ref}")')
         if link is None:
             link = page.query_selector(SEL_FAQ_DETAIL_LINK)
         if link is None:
@@ -690,9 +665,7 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
             return False
         try:
             next_link.click()
-            page.wait_for_selector(
-                f"{SEL_FAQ_RESULT} tbody tr", timeout=self.timeout_ms
-            )
+            page.wait_for_selector(f"{SEL_FAQ_RESULT} tbody tr", timeout=self.timeout_ms)
         except PlaywrightTimeoutError:
             return False
         return True
@@ -758,9 +731,7 @@ class ClipScraper(AbstractContextManager["ClipScraper"]):
 
     def _require_page(self) -> Page:
         if self._page is None:
-            raise ClipScrapeError(
-                "ClipScraper 는 컨텍스트 매니저(`with ...`)로 사용해야 합니다."
-            )
+            raise ClipScrapeError("ClipScraper 는 컨텍스트 매니저(`with ...`)로 사용해야 합니다.")
         return self._page
 
     def _respect_rate_limit(self) -> None:

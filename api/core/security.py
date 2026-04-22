@@ -124,9 +124,7 @@ def decode_token(token: str, expected_type: str = "access") -> dict[str, Any]:
         raise SecurityError(f"토큰 검증 실패: {exc}") from exc
 
     if payload.get("type") != expected_type:
-        raise SecurityError(
-            f"토큰 타입 불일치: expected={expected_type} got={payload.get('type')}"
-        )
+        raise SecurityError(f"토큰 타입 불일치: expected={expected_type} got={payload.get('type')}")
     if "sub" not in payload:
         raise SecurityError("토큰에 sub 클레임 없음")
     return payload

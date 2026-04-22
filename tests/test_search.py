@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
+from api.db.models import HSCode
 from api.services.hs_sections import (
     CHAPTER_TO_SECTION,
     SECTIONS,
@@ -20,16 +21,12 @@ from api.services.search import (
     CASE_SCORE_WEIGHT,
     TOOL_NAME_SECTION,
     CaseHit,
-    HSCandidate,
     NoteHit,
-    SectionCandidate,
     _features_brief,
     aggregate_candidates,
     build_query_text,
     determine_sections,
 )
-from api.db.models import HSCode
-
 
 # ---- hs_sections 구조 정합성 ----
 
@@ -99,13 +96,13 @@ def test_chapter_to_section_index_sizes_match() -> None:
 
 
 def _mk_features(**kw) -> ProductFeatures:
-    defaults = dict(
-        product_name_normalized="노트북",
-        materials=[],
-        functions=[],
-        confidence=0.8,
-        follow_up_questions=[],
-    )
+    defaults = {
+        "product_name_normalized": "노트북",
+        "materials": [],
+        "functions": [],
+        "confidence": 0.8,
+        "follow_up_questions": [],
+    }
     defaults.update(kw)
     return ProductFeatures(**defaults)
 

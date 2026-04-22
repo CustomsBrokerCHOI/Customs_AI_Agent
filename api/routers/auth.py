@@ -5,10 +5,9 @@ HttpOnly cookie 로 토큰 주입 (XSS 방어, Eng Review 설계).
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Annotated
-
-import logging
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
@@ -204,9 +203,7 @@ async def login(
 
     # 4) 비활성 계정
     if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="비활성 계정입니다."
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="비활성 계정입니다.")
 
     # 5) 성공 — 카운터 리셋 + 감사
     record_success(user)
@@ -235,22 +232,16 @@ async def refresh(
 ) -> TokenResponse:
     """Refresh 토큰으로 access 토큰 재발급."""
     if not refresh_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="리프레시 토큰 없음"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="리프레시 토큰 없음")
     try:
         payload = decode_token(refresh_token, expected_type="refresh")
         user_id = uuid.UUID(payload["sub"])
     except (SecurityError, KeyError, ValueError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
     user = await db.get(User, user_id)
     if user is None or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="사용자 없음"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="사용자 없음")
     return await _issue_tokens_for(user, response)
 
 

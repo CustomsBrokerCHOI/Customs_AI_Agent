@@ -28,9 +28,10 @@ import io
 import json
 import logging
 import sys
+from collections.abc import Iterable
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -199,9 +200,7 @@ def upsert_notes_from_json(
             notes_upserted += 1
 
             if replace_chunks:
-                session.execute(
-                    delete(NoteChunk).where(NoteChunk.note_id == note_id)
-                )
+                session.execute(delete(NoteChunk).where(NoteChunk.note_id == note_id))
 
             chunks = DataManager.chunk_explanatory_note(
                 {
@@ -303,9 +302,7 @@ def _normalize_hs(v: Any) -> str | None:
     return None
 
 
-def upsert_cases_from_jsonl(
-    session: Session, jsonl_path: Path
-) -> tuple[int, int, int]:
+def upsert_cases_from_jsonl(session: Session, jsonl_path: Path) -> tuple[int, int, int]:
     """``dev_probe_cases`` JSONL → ``classification_cases``.
 
     - ``hs_code`` 가 ``hs_codes`` 에 없으면 FK 오류 방지로 ``NULL`` 로 강등.
@@ -316,9 +313,7 @@ def upsert_cases_from_jsonl(
 
     :returns: ``(inserted_or_updated, hs_code_nulled, total_rows)``
     """
-    existing_hs: set[str] = {
-        row[0] for row in session.execute(select(HSCode.hs_code)).all()
-    }
+    existing_hs: set[str] = {row[0] for row in session.execute(select(HSCode.hs_code)).all()}
 
     inserted = 0
     hs_nulled = 0
@@ -442,9 +437,7 @@ def main() -> int:
                 return 2
             total_notes = total_chunks = 0
             for p in paths:
-                n, c = upsert_notes_from_json(
-                    session, p, replace_chunks=args.replace_chunks
-                )
+                n, c = upsert_notes_from_json(session, p, replace_chunks=args.replace_chunks)
                 total_notes += n
                 total_chunks += c
                 print(f"[NOTE] {p.name}: notes={n}, chunks={c}")
@@ -461,13 +454,9 @@ def main() -> int:
                 total_cases += n
                 total_nulled += nulled
                 total_rows += rows
-                print(
-                    f"[CASE] {p.name}: upserted={n}, hs_nulled={nulled}, rows={rows}"
-                )
+                print(f"[CASE] {p.name}: upserted={n}, hs_nulled={nulled}, rows={rows}")
             session.commit()
-            print(
-                f"[TOTAL] cases={total_cases}, hs_nulled={total_nulled}, rows={total_rows}"
-            )
+            print(f"[TOTAL] cases={total_cases}, hs_nulled={total_nulled}, rows={total_rows}")
         else:  # pragma: no cover
             parser.error(f"unknown cmd: {args.cmd}")
 

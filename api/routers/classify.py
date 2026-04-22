@@ -29,17 +29,10 @@ from api.db.session import get_db
 from api.deps import CurrentUser
 from api.schemas.classify import (
     ClassifyRequest,
-    ClassifyResult,
     JobCreateResponse,
     JobStatusResponse,
     JobSummary,
     ReviewRequest,
-)
-from api.services.classify_engine import (
-    ClassifyInput,
-    mock_result,
-    result_to_dict,
-    run as engine_run,
 )
 from api.services.audit import (
     ACTION_CLASSIFY_CREATE,
@@ -49,6 +42,12 @@ from api.services.audit import (
     get_client_ip,
     record_audit,
     truncate_meta_text,
+)
+from api.services.classify_engine import (
+    ClassifyInput,
+    mock_result,
+    result_to_dict,
+    run as engine_run,
 )
 from api.services.llm_client import UsageLogger
 from api.services.rate_limit import check_classify_rate_limit
@@ -181,9 +180,7 @@ async def create_classify_job(
     await db.refresh(job)
 
     background.add_task(_run_classify_job, job.id)
-    return JobCreateResponse(
-        job_id=job.id, status=job.status, created_at=job.created_at
-    )
+    return JobCreateResponse(job_id=job.id, status=job.status, created_at=job.created_at)
 
 
 @router.get("", response_model=list[JobSummary])
@@ -218,14 +215,10 @@ async def get_classify_job(
     """분류 상태·결과 조회. 소유자만 접근 가능."""
     job = await db.get(ClassifyJob, job_id)
     if job is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="분류 작업 없음"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="분류 작업 없음")
     if job.user_id != user.id:
         # 타 사용자 존재 유무 누출 방지 → 404 로 통일
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="분류 작업 없음"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="분류 작업 없음")
     return job
 
 
@@ -240,9 +233,7 @@ async def review_classify_job(
     """관세사 확인·채택. Design Review 결정: reviewed=True 영속 저장."""
     job = await db.get(ClassifyJob, job_id)
     if job is None or job.user_id != user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="분류 작업 없음"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="분류 작업 없음")
     if job.status != "complete":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -277,15 +268,11 @@ async def review_classify_job(
     return job
 
 
-async def _load_owned_job(
-    job_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession
-) -> ClassifyJob:
+async def _load_owned_job(job_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession) -> ClassifyJob:
     """소유자 검증 + 완료 상태 확인. 둘 다 404/409 통일."""
     job = await db.get(ClassifyJob, job_id)
     if job is None or job.user_id != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="분류 작업 없음"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="분류 작업 없음")
     if job.status != "complete":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -319,9 +306,7 @@ async def get_report_pdf(
     try:
         pdf_bytes = render_pdf_report(html_str)
     except PDFUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
 
     try:
         await record_audit(

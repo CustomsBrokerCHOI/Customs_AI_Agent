@@ -25,10 +25,11 @@ import io
 import json
 import logging
 import sys
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +163,7 @@ def format_text(report: UsageReport, top_users: int = 5) -> str:
         return "\n".join(lines)
 
     completed = report.completed_count
-    lines.append(
-        f"[완료/중단] 완료 {completed}건, 중단 {report.event_count - completed}건"
-    )
+    lines.append(f"[완료/중단] 완료 {completed}건, 중단 {report.event_count - completed}건")
 
     if report.stopped_at:
         lines.append("[중단 단계 분포]")
@@ -209,9 +208,7 @@ def _parse_date(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 
-def _resolve_range(
-    args: argparse.Namespace, today: date | None = None
-) -> tuple[date, date]:
+def _resolve_range(args: argparse.Namespace, today: date | None = None) -> tuple[date, date]:
     today = today or datetime.now(timezone.utc).date()
     until = _parse_date(args.until) if args.until else today
     if args.since:
@@ -233,12 +230,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--since", help="시작일 YYYY-MM-DD (우선)")
     parser.add_argument("--until", help="종료일 YYYY-MM-DD (default 오늘 UTC)")
     parser.add_argument("--usage-dir", default=str(DEFAULT_USAGE_DIR))
-    parser.add_argument(
-        "--format", choices=("text", "json"), default="text", help="출력 포맷"
-    )
-    parser.add_argument(
-        "--top-users", type=int, default=5, help="텍스트 출력에서 상위 사용자 N 명"
-    )
+    parser.add_argument("--format", choices=("text", "json"), default="text", help="출력 포맷")
+    parser.add_argument("--top-users", type=int, default=5, help="텍스트 출력에서 상위 사용자 N 명")
     args = parser.parse_args(argv)
 
     since, until = _resolve_range(args)

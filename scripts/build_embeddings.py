@@ -37,8 +37,8 @@ import io
 import logging
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, or_, select, update
@@ -253,7 +253,7 @@ def run_notes(
     for start in range(0, len(rows), batch_size):
         batch = rows[start : start + batch_size]
         vectors = embed_batch(client, [r.text for r in batch])
-        for r, v in zip(batch, vectors):
+        for r, v in zip(batch, vectors, strict=True):
             r.embedding = v
             r.embedding_model = EMBED_MODEL
             r.embedding_version = version_id
@@ -280,7 +280,7 @@ def run_cases(
         batch = rows[start : start + batch_size]
         texts = [_case_text(r) for r in batch]
         vectors = embed_batch(client, texts)
-        for r, v in zip(batch, vectors):
+        for r, v in zip(batch, vectors, strict=True):
             r.embedding = v
             r.embedding_model = EMBED_MODEL
             r.embedding_version = version_id

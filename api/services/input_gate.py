@@ -22,13 +22,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from api.core.config import settings
-
 logger = logging.getLogger(__name__)
 
-PROMPT_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "prompts" / "input_gate.md"
-)
+PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "input_gate.md"
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 2048
@@ -50,9 +46,7 @@ class ProductFeatures(BaseModel):
     primary_use: str | None = None
     functions: list[str] = Field(default_factory=list)
     manufacturing_method: str | None = None
-    form_factor: str | None = Field(
-        None, description="완제품 / 부분품 / 미조립 키트 / 원재료"
-    )
+    form_factor: str | None = Field(None, description="완제품 / 부분품 / 미조립 키트 / 원재료")
     key_specifications: dict[str, str] = Field(default_factory=dict)
     confidence: float = Field(..., ge=0.0, le=1.0)
     follow_up_questions: list[str] = Field(default_factory=list)
@@ -156,10 +150,7 @@ def build_messages(
 def _pick_tool_use(resp: Any) -> dict[str, Any] | None:
     """Anthropic 응답 content 배열에서 타겟 tool_use 블록의 input dict 반환."""
     for block in getattr(resp, "content", []) or []:
-        if (
-            getattr(block, "type", None) == "tool_use"
-            and getattr(block, "name", None) == TOOL_NAME
-        ):
+        if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == TOOL_NAME:
             return dict(getattr(block, "input", {}) or {})
     return None
 
@@ -206,9 +197,7 @@ async def extract_features(
 
     tool_input = _pick_tool_use(resp)
     if tool_input is None:
-        raise RuntimeError(
-            f"Input Gate: Claude 가 '{TOOL_NAME}' tool_use 를 반환하지 않음"
-        )
+        raise RuntimeError(f"Input Gate: Claude 가 '{TOOL_NAME}' tool_use 를 반환하지 않음")
 
     features = ProductFeatures.model_validate(tool_input)
 

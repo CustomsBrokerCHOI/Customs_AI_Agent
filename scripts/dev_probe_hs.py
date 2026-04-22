@@ -22,7 +22,6 @@ from dotenv import load_dotenv
 
 from scripts.unipass_client import UnipassClient, _configure_logging
 
-
 ASSUMED_TAGS = ("hsSgn", "korePrnm", "englPrnm")
 CACHE_DIR = Path("data") / "cache"
 

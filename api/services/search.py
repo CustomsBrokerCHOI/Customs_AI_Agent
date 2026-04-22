@@ -39,9 +39,7 @@ from api.services.input_gate import ProductFeatures
 
 logger = logging.getLogger(__name__)
 
-PROMPT_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "prompts" / "section_select.md"
-)
+PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "section_select.md"
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 1024
@@ -198,9 +196,7 @@ async def determine_sections(
 
     tool_input = _pick_tool_input(resp, TOOL_NAME_SECTION)
     if tool_input is None:
-        raise RuntimeError(
-            f"Section 결정: '{TOOL_NAME_SECTION}' tool_use 블록 없음"
-        )
+        raise RuntimeError(f"Section 결정: '{TOOL_NAME_SECTION}' tool_use 블록 없음")
 
     raw = tool_input.get("candidates") or []
     valid_romans = {s.roman for s in SECTIONS}
@@ -223,10 +219,7 @@ async def determine_sections(
 
 def _pick_tool_input(resp: Any, name: str) -> dict[str, Any] | None:
     for block in getattr(resp, "content", []) or []:
-        if (
-            getattr(block, "type", None) == "tool_use"
-            and getattr(block, "name", None) == name
-        ):
+        if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == name:
             return dict(getattr(block, "input", {}) or {})
     return None
 
@@ -323,9 +316,7 @@ def search_cases(
 # ---- 집계 ----
 
 
-def _load_hs_master_for_headings(
-    session: Session, headings: list[str]
-) -> dict[str, HSCode]:
+def _load_hs_master_for_headings(session: Session, headings: list[str]) -> dict[str, HSCode]:
     """heading → 대표 HSCode (첫 hs_code) dict."""
     if not headings:
         return {}
@@ -390,9 +381,7 @@ def aggregate_candidates(
                 top_snippet=bkt.top_snippet,
             )
         )
-    candidates.sort(
-        key=lambda c: (-c.score, -(c.notes_hits + c.cases_hits), c.heading)
-    )
+    candidates.sort(key=lambda c: (-c.score, -(c.notes_hits + c.cases_hits), c.heading))
     return candidates
 
 
@@ -406,9 +395,7 @@ async def embed_text(openai_client: Any, text: str, dim: int = 1536) -> list[flo
     """
     from scripts.build_embeddings import EMBED_MODEL
 
-    resp = await openai_client.embeddings.create(
-        model=EMBED_MODEL, input=[text], dimensions=dim
-    )
+    resp = await openai_client.embeddings.create(model=EMBED_MODEL, input=[text], dimensions=dim)
     return list(resp.data[0].embedding)
 
 
@@ -418,9 +405,7 @@ def _embed_single(openai_client: Any, text: str, dim: int = 1536) -> list[float]
     """Deprecated: sync OpenAI 용 레거시 경로. 엔진은 ``embed_text`` (async) 를 사용."""
     from scripts.build_embeddings import EMBED_MODEL
 
-    resp = openai_client.embeddings.create(
-        model=EMBED_MODEL, input=[text], dimensions=dim
-    )
+    resp = openai_client.embeddings.create(model=EMBED_MODEL, input=[text], dimensions=dim)
     return list(resp.data[0].embedding)
 
 
@@ -456,9 +441,7 @@ async def run_search(
     case_hits = search_cases(db_session, query_vec, k, chapters)
     filter_fallback = False
     if not note_hits and not case_hits and chapters:
-        logger.warning(
-            "chapter 필터(%s)로 결과 0건 → 필터 제거 후 재검색", sorted(chapters)
-        )
+        logger.warning("chapter 필터(%s)로 결과 0건 → 필터 제거 후 재검색", sorted(chapters))
         note_hits = search_note_chunks(db_session, query_vec, k, None)
         case_hits = search_cases(db_session, query_vec, k, None)
         filter_fallback = True

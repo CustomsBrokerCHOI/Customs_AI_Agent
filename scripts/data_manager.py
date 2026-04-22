@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping
 
 import pandas as pd
 
@@ -140,9 +140,7 @@ def _split_with_overlap(
     return _split_tokens_whitespace(text, chunk_tokens, overlap_tokens)
 
 
-def _split_tokens_tiktoken(
-    text: str, chunk_tokens: int, overlap_tokens: int, enc
-) -> list[str]:
+def _split_tokens_tiktoken(text: str, chunk_tokens: int, overlap_tokens: int, enc) -> list[str]:
     ids = enc.encode(text)
     if not ids:
         return []
@@ -158,9 +156,7 @@ def _split_tokens_tiktoken(
     return chunks
 
 
-def _split_tokens_whitespace(
-    text: str, chunk_tokens: int, overlap_tokens: int
-) -> list[str]:
+def _split_tokens_whitespace(text: str, chunk_tokens: int, overlap_tokens: int) -> list[str]:
     tokens = _TOKEN_PATTERN.findall(text)
     if not tokens:
         return []

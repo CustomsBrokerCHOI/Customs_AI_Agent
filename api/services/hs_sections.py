@@ -130,9 +130,7 @@ SECTIONS: tuple[Section, ...] = (
 
 
 # 역인덱스 — chapter 2자리 → section roman
-CHAPTER_TO_SECTION: dict[int, str] = {
-    ch: s.roman for s in SECTIONS for ch in s.chapters
-}
+CHAPTER_TO_SECTION: dict[int, str] = {ch: s.roman for s in SECTIONS for ch in s.chapters}
 
 ROMAN_TO_SECTION: dict[str, Section] = {s.roman: s for s in SECTIONS}
 

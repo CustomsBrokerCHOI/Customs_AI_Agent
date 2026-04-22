@@ -24,7 +24,6 @@ from scripts.eval_search import (
     recall_at_k,
 )
 
-
 # ---- rank_of_first_hit ----
 
 
@@ -146,9 +145,7 @@ def test_eval_record_rejects_non_four_digit_heading() -> None:
 
 def test_eval_record_rejects_non_ten_digit_hs10() -> None:
     with pytest.raises(ValidationError):
-        EvalRecord(
-            id="x", query="q", gt_heading="8471", gt_hs10="84713000", source="clip_case"
-        )
+        EvalRecord(id="x", query="q", gt_heading="8471", gt_hs10="84713000", source="clip_case")
 
 
 def test_eval_record_empty_query_rejected() -> None:
@@ -164,18 +161,14 @@ def _mk_case(ref: str, hs: str, name: str = "x") -> dict:
 
 
 def test_stratified_sample_is_deterministic_with_seed() -> None:
-    cases = [
-        _mk_case(f"r{i}", f"{8471 + (i % 5):04d}300000") for i in range(30)
-    ]
+    cases = [_mk_case(f"r{i}", f"{8471 + (i % 5):04d}300000") for i in range(30)]
     a = stratified_sample(cases, count=10, seed=42)
     b = stratified_sample(cases, count=10, seed=42)
     assert [c["case_ref"] for c in a] == [c["case_ref"] for c in b]
 
 
 def test_stratified_sample_different_seed_differs() -> None:
-    cases = [
-        _mk_case(f"r{i}", f"{8471 + (i % 5):04d}300000") for i in range(30)
-    ]
+    cases = [_mk_case(f"r{i}", f"{8471 + (i % 5):04d}300000") for i in range(30)]
     a = stratified_sample(cases, count=10, seed=42)
     b = stratified_sample(cases, count=10, seed=99)
     assert [c["case_ref"] for c in a] != [c["case_ref"] for c in b]
@@ -183,18 +176,14 @@ def test_stratified_sample_different_seed_differs() -> None:
 
 def test_stratified_sample_covers_all_headings_when_possible() -> None:
     # 5 개 heading 각 6건 → 5건 뽑으면 5 개 모두 최소 1건
-    cases = [
-        _mk_case(f"r{i}", f"{8471 + (i % 5):04d}300000") for i in range(30)
-    ]
+    cases = [_mk_case(f"r{i}", f"{8471 + (i % 5):04d}300000") for i in range(30)]
     picked = stratified_sample(cases, count=5, seed=1)
     headings = {c["hs_code"][:4] for c in picked}
     assert len(headings) == 5
 
 
 def test_stratified_sample_respects_count() -> None:
-    cases = [
-        _mk_case(f"r{i}", f"{8471 + (i % 3):04d}300000") for i in range(9)
-    ]
+    cases = [_mk_case(f"r{i}", f"{8471 + (i % 3):04d}300000") for i in range(9)]
     picked = stratified_sample(cases, count=6, seed=7)
     assert len(picked) == 6
 
@@ -256,9 +245,16 @@ def test_load_clip_cases_dedupes_by_case_ref(tmp_path: Path) -> None:
 def test_load_clip_cases_skips_rows_missing_name_or_hs(tmp_path: Path) -> None:
     p = tmp_path / "a.jsonl"
     p.write_text(
-        json.dumps({"case_ref": "a", "hs_code": None, "product_name": "x"}, ensure_ascii=False) + "\n"
-        + json.dumps({"case_ref": "b", "hs_code": "8471300000", "product_name": ""}, ensure_ascii=False) + "\n"
-        + json.dumps({"case_ref": "c", "hs_code": "8471300000", "product_name": "ok"}, ensure_ascii=False) + "\n",
+        json.dumps({"case_ref": "a", "hs_code": None, "product_name": "x"}, ensure_ascii=False)
+        + "\n"
+        + json.dumps(
+            {"case_ref": "b", "hs_code": "8471300000", "product_name": ""}, ensure_ascii=False
+        )
+        + "\n"
+        + json.dumps(
+            {"case_ref": "c", "hs_code": "8471300000", "product_name": "ok"}, ensure_ascii=False
+        )
+        + "\n",
         encoding="utf-8",
     )
     cases = load_clip_cases([p])
@@ -287,9 +283,7 @@ def test_load_manual_records_reads_valid_and_skips_comments(tmp_path: Path) -> N
         )
         + "\n"
         + "\n"  # 빈 줄
-        + json.dumps(
-            {"query": "자동 id", "gt_heading": "8471", "source": "manual"}
-        )
+        + json.dumps({"query": "자동 id", "gt_heading": "8471", "source": "manual"})
         + "\n",
         encoding="utf-8",
     )

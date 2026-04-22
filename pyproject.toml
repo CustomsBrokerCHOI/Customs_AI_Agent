@@ -1,0 +1,58 @@
+[project]
+name = "customs-ai-agent"
+version = "0.1.0"
+description = "HS CODE 자동 품목분류 SaaS — 관세사 분류 의사결정 보조 AI"
+readme = "CLAUDE.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# Alembic autogen 결과는 손으로 관리하지 않고 스크립트 보일러플레이트가 많아
+# 린트에서 제외한다. 캐시·가상환경·빌드 산출물도 제외.
+extend-exclude = [
+  "api/alembic/versions",
+  "data",
+  "reports",
+  ".venv",
+  "build",
+  "dist",
+  "web",  # TypeScript/Next.js — 별도 린터
+]
+
+[tool.ruff.lint]
+# 기본 실용 세트. 과도하게 잡지 않음.
+#   E / W : pycodestyle errors/warnings
+#   F     : pyflakes (미사용 import, 변수)
+#   I     : isort (import 정렬)
+#   B     : flake8-bugbear (흔한 실수)
+#   UP    : pyupgrade (구식 문법)
+#   C4    : flake8-comprehensions
+#   SIM   : flake8-simplify (단, 과도한 재작성 지양으로 일부 무시)
+select = ["E", "W", "F", "I", "B", "UP", "C4", "SIM"]
+ignore = [
+  "E501",   # line-too-long — 포매터에 위임 (docstring·한글 주석은 자연 길어짐)
+  "B008",   # FastAPI Depends() 등 함수 호출 기본값은 프레임워크 관용
+  "SIM108", # ternary 강제는 가독성 상쇄, if/else 허용
+  "SIM117", # 중첩 with 병합 강제는 문맥 손실
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 테스트는 assert 문이 자연스럽고 긴 JSON 리터럴/한글 문자열이 많음.
+"tests/**/*.py" = [
+  "E402",   # 테스트 파일에서 import 순서는 fixture 설정 순서에 종속될 수 있음
+  "B018",   # useless expression (assert 대신 단순 호출이 fixture 초기화로 쓰일 수 있음)
+]
+# scripts 는 `python -m scripts.xxx` 실행이 기본이라 __main__ 보일러플레이트 허용.
+"scripts/**/*.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["api", "scripts", "tests"]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = false

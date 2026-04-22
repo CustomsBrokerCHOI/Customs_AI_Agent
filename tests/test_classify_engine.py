@@ -11,7 +11,6 @@ from api.services.classify_engine import (
     DRAFT_NOTICE,
     CandidateOut,
     ClassifyInput,
-    EngineResult,
     _build_breadcrumb,
     _build_candidate_outs,
     _build_notice,
@@ -25,8 +24,6 @@ from api.services.classify_engine import (
 from api.services.input_gate import InputGateResult, ProductFeatures
 from api.services.rag_verify import CitationRef, VerificationVerdict
 from api.services.search import HSCandidate, SearchResult, SectionCandidate
-from api.services.verify import VerificationResult
-
 
 # ---- 순수 함수 ----
 
@@ -119,11 +116,7 @@ def _mk_verdict(heading: str, verdict: str, conf: float) -> VerificationVerdict:
         verdict=verdict,
         confidence=conf,
         matched_clauses=(
-            [
-                CitationRef(
-                    source_kind="heading_note", heading=heading, excerpt="ex"
-                )
-            ]
+            [CitationRef(source_kind="heading_note", heading=heading, excerpt="ex")]
             if verdict == "match"
             else []
         ),
@@ -171,9 +164,18 @@ def test_build_candidate_outs_match_emits_citations() -> None:
 def test_build_notice_returns_draft_when_match_present() -> None:
     outs = [
         CandidateOut(
-            rank=1, hs_code="1", name_kr=None, name_en=None, heading="8471",
-            sub_heading="", breadcrumb=[], confidence=0.9, base_tariff_rate=None,
-            verified=True, verdict="match", citations=[],
+            rank=1,
+            hs_code="1",
+            name_kr=None,
+            name_en=None,
+            heading="8471",
+            sub_heading="",
+            breadcrumb=[],
+            confidence=0.9,
+            base_tariff_rate=None,
+            verified=True,
+            verdict="match",
+            citations=[],
         )
     ]
     notice = _build_notice(outs, [])
@@ -184,9 +186,18 @@ def test_build_notice_returns_draft_when_match_present() -> None:
 def test_build_notice_warns_when_no_match() -> None:
     outs = [
         CandidateOut(
-            rank=1, hs_code="1", name_kr=None, name_en=None, heading="8471",
-            sub_heading="", breadcrumb=[], confidence=0.4, base_tariff_rate=None,
-            verified=False, verdict="uncertain", citations=[],
+            rank=1,
+            hs_code="1",
+            name_kr=None,
+            name_en=None,
+            heading="8471",
+            sub_heading="",
+            breadcrumb=[],
+            confidence=0.4,
+            base_tariff_rate=None,
+            verified=False,
+            verdict="uncertain",
+            citations=[],
         )
     ]
     notice = _build_notice(outs, [])
@@ -202,9 +213,18 @@ def test_build_notice_empty_candidates_uncertain() -> None:
 def test_build_notice_reports_deep_verify_errors() -> None:
     outs = [
         CandidateOut(
-            rank=1, hs_code="1", name_kr=None, name_en=None, heading="8471",
-            sub_heading="", breadcrumb=[], confidence=0.9, base_tariff_rate=None,
-            verified=True, verdict="match", citations=[],
+            rank=1,
+            hs_code="1",
+            name_kr=None,
+            name_en=None,
+            heading="8471",
+            sub_heading="",
+            breadcrumb=[],
+            confidence=0.9,
+            base_tariff_rate=None,
+            verified=True,
+            verdict="match",
+            citations=[],
         )
     ]
     notice = _build_notice(outs, [{"heading": "6109", "message": "boom"}])
@@ -218,6 +238,7 @@ def test_result_to_dict_is_json_friendly() -> None:
     r = mock_result("노트북")
     d = result_to_dict(r)
     import json
+
     # 직렬화 가능해야 함
     dumped = json.dumps(d, ensure_ascii=False)
     parsed = json.loads(dumped)
@@ -272,9 +293,7 @@ async def test_run_returns_follow_up_when_input_gate_needs_info(
     from api.services import classify_engine as ce
 
     async def fake_extract(*a, **kw):
-        return _input_gate_result(
-            needs_more_info=True, follow_ups=["재질은?", "용도는?"]
-        )
+        return _input_gate_result(needs_more_info=True, follow_ups=["재질은?", "용도는?"])
 
     monkeypatch.setattr(ce, "extract_features", fake_extract)
 
@@ -306,10 +325,22 @@ async def test_run_full_happy_path(monkeypatch, fake_openai_client) -> None:
     fake_search = SearchResult(
         section_candidates=[SectionCandidate(section_roman="XVI", confidence=0.9, reasoning="r")],
         hs_candidates=[
-            HSCandidate(heading="8471", hs_code="8471300000", name_kr="노트북",
-                        name_en="NB", score=0.85, section_roman="XVI"),
-            HSCandidate(heading="8472", hs_code="8472000000", name_kr="기타",
-                        name_en="", score=0.6, section_roman="XVI"),
+            HSCandidate(
+                heading="8471",
+                hs_code="8471300000",
+                name_kr="노트북",
+                name_en="NB",
+                score=0.85,
+                section_roman="XVI",
+            ),
+            HSCandidate(
+                heading="8472",
+                hs_code="8472000000",
+                name_kr="기타",
+                name_en="",
+                score=0.6,
+                section_roman="XVI",
+            ),
         ],
         query="q",
         meta={"note_hits": 10, "case_hits": 2},
@@ -320,8 +351,10 @@ async def test_run_full_happy_path(monkeypatch, fake_openai_client) -> None:
 
     def fake_fetch_note_bundle(session, heading, hsk_year=2022):
         from api.services.rag_verify import NoteBundle
+
         return NoteBundle(
-            heading=heading, hsk_year=hsk_year,
+            heading=heading,
+            hsk_year=hsk_year,
             notes={("heading_note", "ko"): "휴대용 자동자료처리기계 설명"},
         )
 
@@ -334,7 +367,7 @@ async def test_run_full_happy_path(monkeypatch, fake_openai_client) -> None:
     monkeypatch.setattr(
         ce,
         "_build_sync_search_callable",
-        lambda *args, **kw: (lambda _s: fake_search),
+        lambda *args, **kw: lambda _s: fake_search,
     )
 
     result = await run(
@@ -398,8 +431,10 @@ async def test_run_retry_without_filter_when_verify_gate_empty(
 
     def fake_fetch_note_bundle(session, heading, hsk_year=2022):
         from api.services.rag_verify import NoteBundle
+
         return NoteBundle(
-            heading=heading, hsk_year=hsk_year,
+            heading=heading,
+            hsk_year=hsk_year,
             notes={("heading_note", "ko"): "면 편물 티셔츠"},
         )
 
@@ -499,13 +534,14 @@ async def test_run_deep_verify_errors_are_captured_not_raised(
 
     def fake_fetch(session, heading, hsk_year=2022):
         from api.services.rag_verify import NoteBundle
+
         return NoteBundle(heading=heading, hsk_year=hsk_year, notes={("heading_note", "ko"): "x"})
 
     monkeypatch.setattr(ce, "extract_features", fake_extract)
     monkeypatch.setattr(ce, "determine_sections", fake_determine_sections)
     monkeypatch.setattr(ce, "verify_candidate", fake_verify_candidate)
     monkeypatch.setattr(ce, "fetch_note_bundle", fake_fetch)
-    monkeypatch.setattr(ce, "_build_sync_search_callable", lambda *a, **kw: (lambda _s: search))
+    monkeypatch.setattr(ce, "_build_sync_search_callable", lambda *a, **kw: lambda _s: search)
 
     result = await run(
         ClassifyInput(product_name="x", description="y"),

@@ -16,7 +16,6 @@ from api.services.report import (
     report_filename,
 )
 
-
 # ---- 헬퍼 ----
 
 
@@ -80,17 +79,17 @@ def _sample_result_dict() -> dict:
 
 
 def _sample_job(**overrides) -> SimpleNamespace:
-    base = dict(
-        id=uuid.UUID("11111111-2222-3333-4444-555555555555"),
-        product_name="M3 맥북에어 13인치",
-        description="Apple 제조 휴대용 랩탑 컴퓨터.",
-        status="complete",
-        reviewed=False,
-        accepted_hs_code=None,
-        created_at=datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc),
-        completed_at=datetime(2026, 4, 22, 10, 1, 30, tzinfo=timezone.utc),
-        result=_sample_result_dict(),
-    )
+    base = {
+        "id": uuid.UUID("11111111-2222-3333-4444-555555555555"),
+        "product_name": "M3 맥북에어 13인치",
+        "description": "Apple 제조 휴대용 랩탑 컴퓨터.",
+        "status": "complete",
+        "reviewed": False,
+        "accepted_hs_code": None,
+        "created_at": datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc),
+        "completed_at": datetime(2026, 4, 22, 10, 1, 30, tzinfo=timezone.utc),
+        "result": _sample_result_dict(),
+    }
     base.update(overrides)
     return SimpleNamespace(**base)
 

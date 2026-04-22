@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -54,9 +53,7 @@ def test_retry_succeeds_on_first_try(tmp_path) -> None:
     assert not (tmp_path / "m.jsonl").exists()
 
 
-def test_retry_recovers_after_transient_failures(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_retry_recovers_after_transient_failures(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("scripts.clip_scraper.time.sleep", lambda s: None)
     s = _make_bare(manifest_path=tmp_path / "m.jsonl")
     calls = {"count": 0}
@@ -120,14 +117,10 @@ def test_retry_does_not_retry_non_transient(tmp_path) -> None:
     assert calls["count"] == 1  # 재시도 없음
 
 
-def test_retry_sleep_uses_exponential_backoff(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_retry_sleep_uses_exponential_backoff(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """실패 간격이 지수적으로 증가하는지 sleep 호출을 관측."""
     sleeps: list[float] = []
-    monkeypatch.setattr(
-        "scripts.clip_scraper.time.sleep", lambda s: sleeps.append(s)
-    )
+    monkeypatch.setattr("scripts.clip_scraper.time.sleep", lambda s: sleeps.append(s))
     s = _make_bare(manifest_path=tmp_path / "m.jsonl", rate_limit_sec=1.0)
 
     def fn():
@@ -160,9 +153,7 @@ def test_append_manifest_defaults_to_success_event(tmp_path) -> None:
 def test_append_manifest_respects_explicit_event(tmp_path) -> None:
     manifest = tmp_path / "m.jsonl"
     s = _make_bare(manifest_path=manifest)
-    s._append_manifest(
-        {"event": "failure", "kind": "note", "error": "boom"}
-    )
+    s._append_manifest({"event": "failure", "kind": "note", "error": "boom"})
     rec = json.loads(manifest.read_text(encoding="utf-8").strip())
     assert rec["event"] == "failure"
 
@@ -190,11 +181,11 @@ def test_robots_probe_saves_and_detects_no_change(tmp_path, monkeypatch) -> None
     from scripts import dev_probe_robots
 
     # fetch_robots 고정 반환
-    monkeypatch.setattr(dev_probe_robots, "fetch_robots", lambda url, ua: "User-agent: *\nAllow: /\n")
-
-    path1, changed1, _ = dev_probe_robots.probe(
-        url="http://x", out_dir=tmp_path, user_agent="test"
+    monkeypatch.setattr(
+        dev_probe_robots, "fetch_robots", lambda url, ua: "User-agent: *\nAllow: /\n"
     )
+
+    path1, changed1, _ = dev_probe_robots.probe(url="http://x", out_dir=tmp_path, user_agent="test")
     assert path1.exists()
     assert changed1 is True  # 최초
 

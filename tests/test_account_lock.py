@@ -5,8 +5,6 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from api.db.models import User
 from api.services.account_lock import (
     LOCKOUT_DURATION_SEC,

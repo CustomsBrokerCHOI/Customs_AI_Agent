@@ -18,7 +18,6 @@ from api.services.llm_client import (
     make_openai_async_client,
 )
 
-
 # ---- 팩토리 ----
 
 
@@ -31,9 +30,7 @@ def test_make_anthropic_client_requires_key(monkeypatch: pytest.MonkeyPatch) -> 
 def test_make_anthropic_client_sets_timeout_and_retries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "api.services.llm_client.settings", _SettingsStub(anthropic="sk-test")
-    )
+    monkeypatch.setattr("api.services.llm_client.settings", _SettingsStub(anthropic="sk-test"))
     client = make_anthropic_client(timeout=12.5, max_retries=5)
     assert getattr(client, "timeout", None) is not None
     # SDK 에 따라 timeout 은 float 또는 httpx.Timeout 이며 값 반영 확인
@@ -52,9 +49,7 @@ def test_make_openai_async_client_requires_key(
 def test_make_openai_async_client_applies_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "api.services.llm_client.settings", _SettingsStub(openai="sk-test")
-    )
+    monkeypatch.setattr("api.services.llm_client.settings", _SettingsStub(openai="sk-test"))
     client = make_openai_async_client()
     # timeout 이 설정됨 (기본값)
     assert getattr(client, "timeout", None) is not None
@@ -169,9 +164,7 @@ def test_usage_logger_log_job_extracts_meta(tmp_path: Path) -> None:
 def test_usage_logger_log_job_handles_missing_usage(tmp_path: Path) -> None:
     logger = UsageLogger(usage_dir=tmp_path)
     meta = {"engine": "stub"}  # usage 키 없음
-    path = logger.log_job(
-        job_id="j", user_id="u", engine_result_meta=meta, notice=None
-    )
+    path = logger.log_job(job_id="j", user_id="u", engine_result_meta=meta, notice=None)
     payload = json.loads(path.read_text(encoding="utf-8").strip())
     assert payload["input_tokens"] == 0
     assert payload["output_tokens"] == 0

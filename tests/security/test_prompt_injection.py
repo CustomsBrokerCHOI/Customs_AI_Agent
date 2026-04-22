@@ -17,8 +17,8 @@ import pytest
 from api.services.input_gate import (
     MAX_DESC_CHARS,
     MAX_NAME_CHARS,
-    ProductFeatures,
     TOOL_NAME,
+    ProductFeatures,
     build_messages,
     sanitize_user_text,
 )
@@ -32,7 +32,6 @@ from api.services.rag_verify import (
     build_verification_messages,
 )
 from api.services.search import HSCandidate, build_query_text
-
 
 # 악성 페이로드 배터리
 INJECTION_PAYLOADS: list[str] = [
@@ -115,13 +114,13 @@ def test_build_messages_payload_cannot_forge_system_tag() -> None:
 
 
 def _features_with(**kw) -> ProductFeatures:
-    defaults = dict(
-        product_name_normalized="노트북",
-        materials=[],
-        functions=[],
-        confidence=0.8,
-        follow_up_questions=[],
-    )
+    defaults = {
+        "product_name_normalized": "노트북",
+        "materials": [],
+        "functions": [],
+        "confidence": 0.8,
+        "follow_up_questions": [],
+    }
     defaults.update(kw)
     return ProductFeatures(**defaults)
 

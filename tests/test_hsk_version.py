@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 from scripts.clip_scraper import _parse_year_options
 from scripts.detect_hsk_version import compare
-
 
 # ---- _parse_year_options ----
 
@@ -25,8 +22,10 @@ def test_parse_year_options_sorts_ascending() -> None:
 
 
 def test_parse_year_options_rejects_invalid() -> None:
-    assert _parse_year_options(["", "abc", "12", "9999999"]) == [9999] or \
-           _parse_year_options(["", "abc", "12"]) == []
+    assert (
+        _parse_year_options(["", "abc", "12", "9999999"]) == [9999]
+        or _parse_year_options(["", "abc", "12"]) == []
+    )
     # 빈/짧은 문자열은 제외
     assert _parse_year_options(["", "abc", "12"]) == []
 
@@ -83,7 +82,7 @@ def test_compare_db_ahead_of_clip_is_false() -> None:
 
 
 def test_classify_input_default_hsk_year() -> None:
-    from api.services.classify_engine import ClassifyInput, DEFAULT_HSK_YEAR
+    from api.services.classify_engine import DEFAULT_HSK_YEAR, ClassifyInput
 
     inp = ClassifyInput(product_name="x", description="y")
     assert inp.hsk_year == DEFAULT_HSK_YEAR
@@ -131,9 +130,7 @@ def test_build_sync_bundle_callable_default_is_current(monkeypatch) -> None:
 
     monkeypatch.setattr(ce, "fetch_note_bundle", fake_fetch)
 
-    callable_ = ce._build_sync_bundle_callable(
-        [HSCandidate(heading="8471", score=0.9)]
-    )
+    callable_ = ce._build_sync_bundle_callable([HSCandidate(heading="8471", score=0.9)])
     callable_(session=object())
 
     assert captured == [ce.DEFAULT_HSK_YEAR]

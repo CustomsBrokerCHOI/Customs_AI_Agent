@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from api.services.search import HSCandidate, SearchResult, SectionCandidate
 from api.services.verify import (
     MAX_SECTION_REDETERMINE_RETRIES,
@@ -15,7 +13,6 @@ from api.services.verify import (
     verify_heading,
     verify_search_result,
 )
-
 
 # ---- verify_heading ----
 
@@ -100,13 +97,10 @@ def test_partition_candidates_all_rejected() -> None:
 # ---- verify_search_result ----
 
 
-def _mk_search_result(
-    sections: list[str], headings: list[str]
-) -> SearchResult:
+def _mk_search_result(sections: list[str], headings: list[str]) -> SearchResult:
     return SearchResult(
         section_candidates=[
-            SectionCandidate(section_roman=r, confidence=0.7, reasoning="x")
-            for r in sections
+            SectionCandidate(section_roman=r, confidence=0.7, reasoning="x") for r in sections
         ],
         hs_candidates=[_mk_candidate(h) for h in headings],
         query="q",

@@ -21,10 +21,11 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from xml.etree import ElementTree as ET
 
 import requests
@@ -62,8 +63,7 @@ class UnipassClient:
         if self.api_key is None:
             self.api_key = os.environ.get("UNIPASS_API_KEY")
         has_service_keys = any(
-            k.startswith("UNIPASS_API_KEY_") and k != "UNIPASS_API_KEY"
-            for k in os.environ
+            k.startswith("UNIPASS_API_KEY_") and k != "UNIPASS_API_KEY" for k in os.environ
         )
         if not self.api_key and not has_service_keys:
             raise UnipassError(
@@ -179,9 +179,7 @@ class UnipassClient:
             return
         used = self.get_daily_usage(service_name).get(service_name, 0)
         if used >= limit:
-            raise UnipassError(
-                f"서비스 '{service_name}' 일일 호출 한도 초과: {used}/{limit}"
-            )
+            raise UnipassError(f"서비스 '{service_name}' 일일 호출 한도 초과: {used}/{limit}")
         if used >= int(limit * self.usage_warning_threshold):
             logger.warning(
                 "UNIPASS 호출 한도 임박: %s %d/%d (%.0f%%)",
@@ -231,7 +229,9 @@ class UnipassClient:
         if params:
             query.update(params)
 
-        logger.debug("UNIPASS 호출 %s params=%s", url, {k: v for k, v in query.items() if k != "crkyCn"})
+        logger.debug(
+            "UNIPASS 호출 %s params=%s", url, {k: v for k, v in query.items() if k != "crkyCn"}
+        )
         response = self.session.get(url, params=query, timeout=self.timeout)
         response.raise_for_status()
 
@@ -370,9 +370,7 @@ class UnipassClient:
             if item.tag in meta_tags:
                 continue
             row = {
-                child.tag: (child.text or "").strip()
-                for child in item
-                if child.text is not None
+                child.tag: (child.text or "").strip() for child in item if child.text is not None
             }
             if row:
                 rows.append(row)
@@ -406,9 +404,7 @@ class UnipassClient:
             ``notice`` 는 ``ntceInfo`` 원본 메시지.
         """
         if not any((carg_mt_no, mbl_no, hbl_no)):
-            raise UnipassError(
-                "carg_mt_no / mbl_no / hbl_no 중 하나는 지정해야 합니다."
-            )
+            raise UnipassError("carg_mt_no / mbl_no / hbl_no 중 하나는 지정해야 합니다.")
         if (mbl_no or hbl_no) and not bl_yy:
             raise UnipassError("mbl_no 또는 hbl_no 지정 시 bl_yy 필수")
 
@@ -426,9 +422,7 @@ class UnipassClient:
 
         def _row(item: ET.Element) -> dict[str, str]:
             return {
-                child.tag: (child.text or "").strip()
-                for child in item
-                if child.text is not None
+                child.tag: (child.text or "").strip() for child in item if child.text is not None
             }
 
         items = [_row(el) for el in root.iterfind(".//cargCsclPrgsInfoQryVo")]

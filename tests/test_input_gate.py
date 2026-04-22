@@ -19,14 +19,11 @@ from api.services.input_gate import (
     sanitize_user_text,
 )
 
-
 # ---- sanitize_user_text ----
 
 
 def test_sanitize_escapes_angle_brackets() -> None:
-    assert sanitize_user_text("<script>x</script>", 100) == (
-        "&lt;script&gt;x&lt;/script&gt;"
-    )
+    assert sanitize_user_text("<script>x</script>", 100) == ("&lt;script&gt;x&lt;/script&gt;")
 
 
 def test_sanitize_strips_surrounding_whitespace() -> None:
@@ -201,9 +198,7 @@ async def test_extract_features_happy_path() -> None:
     client = AsyncMock()
     client.messages.create = AsyncMock(return_value=_make_response(tool_input))
 
-    result = await extract_features(
-        "노트북", "M3 맥북에어 13인치", image_url=None, client=client
-    )
+    result = await extract_features("노트북", "M3 맥북에어 13인치", image_url=None, client=client)
 
     assert result.features.product_name_normalized == "휴대용 노트북 컴퓨터"
     assert result.features.confidence == 0.88
@@ -267,9 +262,7 @@ async def test_extract_features_passes_image_url_to_messages() -> None:
     client = AsyncMock()
     client.messages.create = AsyncMock(return_value=_make_response(tool_input))
 
-    await extract_features(
-        "시계", "손목시계", image_url="https://img/test.jpg", client=client
-    )
+    await extract_features("시계", "손목시계", image_url="https://img/test.jpg", client=client)
 
     kwargs = client.messages.create.await_args.kwargs
     first_block = kwargs["messages"][0]["content"][0]

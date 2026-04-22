@@ -20,7 +20,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from scripts.clip_scraper import ClipScraper, ClipScrapeError
+from scripts.clip_scraper import ClipScrapeError, ClipScraper
 from scripts.data_manager import DataManager
 
 CACHE_DIR = Path("data") / "cache"
@@ -33,15 +33,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="CLIP 해설서 E2E 수집 + 청킹 검증")
     parser.add_argument("heading", help="4자리 호 번호 (예: 8471)")
     parser.add_argument("--year", default="2022", help="HSK 연도 (기본 2022)")
-    parser.add_argument(
-        "--headed", action="store_true", help="브라우저 창 표시 (디버깅용)"
-    )
-    parser.add_argument(
-        "--chunk-tokens", type=int, default=800, help="청크당 최대 토큰 (기본 800)"
-    )
-    parser.add_argument(
-        "--overlap", type=int, default=100, help="청크 오버랩 토큰 (기본 100)"
-    )
+    parser.add_argument("--headed", action="store_true", help="브라우저 창 표시 (디버깅용)")
+    parser.add_argument("--chunk-tokens", type=int, default=800, help="청크당 최대 토큰 (기본 800)")
+    parser.add_argument("--overlap", type=int, default=100, help="청크 오버랩 토큰 (기본 100)")
     args = parser.parse_args()
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -61,9 +55,7 @@ def main() -> int:
         return 1
 
     note_dict = note.as_dict()
-    note_path.write_text(
-        json.dumps(note_dict, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    note_path.write_text(json.dumps(note_dict, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[SAVED NOTE] {note_path}")
 
     print("\n[NOTE SUMMARY]")

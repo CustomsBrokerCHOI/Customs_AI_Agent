@@ -23,9 +23,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -37,9 +38,7 @@ from api.services.search import HSCandidate
 
 logger = logging.getLogger(__name__)
 
-PROMPT_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "prompts" / "rag_verify.md"
-)
+PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "rag_verify.md"
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 2048
@@ -287,9 +286,7 @@ def validate_citations(
     return verified, unverified
 
 
-def _apply_citation_guard(
-    verdict: VerificationVerdict, bundle: NoteBundle
-) -> VerificationVerdict:
+def _apply_citation_guard(verdict: VerificationVerdict, bundle: NoteBundle) -> VerificationVerdict:
     """환각 가드 적용. matched 가 전부 기각되면 verdict 강등 + confidence 감쇠."""
     m_verified, m_unverified = validate_citations(verdict.matched_clauses, bundle)
     c_verified, c_unverified = validate_citations(verdict.conflicting_clauses, bundle)
@@ -331,17 +328,12 @@ def _apply_citation_guard(
 
 def _pick_tool_input(resp: Any, name: str) -> dict[str, Any] | None:
     for block in getattr(resp, "content", []) or []:
-        if (
-            getattr(block, "type", None) == "tool_use"
-            and getattr(block, "name", None) == name
-        ):
+        if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == name:
             return dict(getattr(block, "input", {}) or {})
     return None
 
 
-def _parse_verdict(
-    tool_input: dict[str, Any], candidate_heading: str
-) -> VerificationVerdict:
+def _parse_verdict(tool_input: dict[str, Any], candidate_heading: str) -> VerificationVerdict:
     """tool_input dict → VerificationVerdict. heading 은 후보값으로 강제 주입."""
     data = dict(tool_input)
     data["candidate_heading"] = candidate_heading
@@ -443,17 +435,16 @@ async def verify_candidates(
     bundles = [fetch_note_bundle(db_session, c.heading, hsk_year) for c in top]
 
     tasks = [
-        verify_candidate(features, c, b, client=claude_client) for c, b in zip(top, bundles)
+        verify_candidate(features, c, b, client=claude_client)
+        for c, b in zip(top, bundles, strict=True)
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     verdicts: list[VerificationVerdict] = []
     errors: list[dict] = []
-    for c, r in zip(top, results):
+    for c, r in zip(top, results, strict=True):
         if isinstance(r, Exception):
-            logger.warning(
-                "verify_candidate 실패 heading=%s: %s", c.heading, r
-            )
+            logger.warning("verify_candidate 실패 heading=%s: %s", c.heading, r)
             errors.append({"heading": c.heading, "message": str(r)})
             continue
         verdicts.append(r)

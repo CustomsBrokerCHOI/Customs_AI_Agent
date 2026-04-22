@@ -33,7 +33,6 @@ from api.core.config import settings
 from api.services.hs_sections import chapters_from_romans, section_by_roman
 from api.services.input_gate import (
     InputGateResult,
-    ProductFeatures,
     extract_features,
 )
 from api.services.rag_verify import (
@@ -59,7 +58,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TOP_N = settings.top_n_verified
 DEFAULT_HSK_YEAR = 2022
-DRAFT_NOTICE = "⚠️ 본 결과는 AI 보조 초안(Draft)입니다. 관세사의 최종 확인 없이 세관 신고에 사용할 수 없습니다."
+DRAFT_NOTICE = (
+    "⚠️ 본 결과는 AI 보조 초안(Draft)입니다. 관세사의 최종 확인 없이 세관 신고에 사용할 수 없습니다."
+)
 
 
 # ---- 공개 데이터 구조 ----
@@ -178,8 +179,7 @@ async def run(
         features, client=claude_client
     )
     stages["sections"] = [
-        {"roman": s.section_roman, "confidence": s.confidence}
-        for s in section_candidates
+        {"roman": s.section_roman, "confidence": s.confidence} for s in section_candidates
     ]
 
     # === 3-B part 2: query + embed (async OpenAI) ===
@@ -196,9 +196,7 @@ async def run(
     k = settings.top_k_candidates
 
     search_result: SearchResult = await db.run_sync(
-        _build_sync_search_callable(
-            query_vec, chapters, k, section_candidates, query_text
-        )
+        _build_sync_search_callable(query_vec, chapters, k, section_candidates, query_text)
     )
     stages["search"] = {
         "note_hits": search_result.meta.get("note_hits", 0),
@@ -220,9 +218,7 @@ async def run(
     if verify_result.should_re_determine:
         logger.info("verify_gate empty → retry without filter, bypass gate")
         search_result = await db.run_sync(
-            _build_sync_search_callable(
-                query_vec, set(), k, section_candidates, query_text
-            )
+            _build_sync_search_callable(query_vec, set(), k, section_candidates, query_text)
         )
         verified_pool: list[HSCandidate] = search_result.hs_candidates[: top_n * 2]
         stages["verify_gate_retry"] = {
@@ -247,19 +243,17 @@ async def run(
     # === 3-D Deep Verify (Top-N 병렬) ===
     top_candidates = verified_pool[:top_n]
 
-    bundles = await db.run_sync(
-        _build_sync_bundle_callable(top_candidates, hsk_year=inp.hsk_year)
-    )
+    bundles = await db.run_sync(_build_sync_bundle_callable(top_candidates, hsk_year=inp.hsk_year))
 
     tasks = [
         verify_candidate(features, c, b, client=claude_client)
-        for c, b in zip(top_candidates, bundles)
+        for c, b in zip(top_candidates, bundles, strict=True)
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     verdicts: list[VerificationVerdict] = []
     errors: list[dict] = []
-    for cand, res in zip(top_candidates, results):
+    for cand, res in zip(top_candidates, results, strict=True):
         if isinstance(res, Exception):
             logger.warning("deep verify failed heading=%s: %s", cand.heading, res)
             errors.append({"heading": cand.heading, "message": str(res)[:300]})
@@ -306,8 +300,7 @@ def _build_sync_search_callable(
         note_hits = search_note_chunks(session, query_vec, k, filt)
         case_hits = search_cases(session, query_vec, k, filt)
         headings = list(
-            {h.heading for h in note_hits}
-            | {c.heading for c in case_hits if c.heading}
+            {h.heading for h in note_hits} | {c.heading for c in case_hits if c.heading}
         )
         hs_master = _load_hs_master_for_headings(session, headings)
         hs_candidates = aggregate_candidates(note_hits, case_hits, hs_master)
@@ -325,9 +318,7 @@ def _build_sync_search_callable(
     return _inner
 
 
-def _build_sync_bundle_callable(
-    candidates: list[HSCandidate], hsk_year: int = DEFAULT_HSK_YEAR
-):
+def _build_sync_bundle_callable(candidates: list[HSCandidate], hsk_year: int = DEFAULT_HSK_YEAR):
     def _inner(session):
         return [fetch_note_bundle(session, c.heading, hsk_year) for c in candidates]
 
@@ -358,9 +349,7 @@ def _build_need_info_result(
     )
 
 
-def _build_uncertain_result(
-    reason: str, usage: _UsageAccumulator, stages: dict
-) -> EngineResult:
+def _build_uncertain_result(reason: str, usage: _UsageAccumulator, stages: dict) -> EngineResult:
     return EngineResult(
         candidates=[],
         notice=f"[분류 불확실] {reason} {DRAFT_NOTICE}",
@@ -380,9 +369,7 @@ def _build_candidate_outs(
     verdicts: list[VerificationVerdict],
 ) -> list[CandidateOut]:
     """후보 + verdict 을 UI 용 ``CandidateOut`` 으로 변환 후 정렬."""
-    verdict_by_heading: dict[str, VerificationVerdict] = {
-        v.candidate_heading: v for v in verdicts
-    }
+    verdict_by_heading: dict[str, VerificationVerdict] = {v.candidate_heading: v for v in verdicts}
     outs: list[CandidateOut] = []
     for c in top_candidates:
         v = verdict_by_heading.get(c.heading)
