@@ -113,6 +113,29 @@ export interface HSDetail {
   source: string;
 }
 
+export type HSLevel = "chapter" | "heading" | "subheading" | "tariff_line";
+
+export interface SectionInfo {
+  roman: string;
+  title_kr: string;
+  title_en: string;
+}
+
+export interface HSChild {
+  code: string;
+  name_kr: string | null;
+  name_en: string | null;
+}
+
+export interface HSLookupResponse {
+  level: HSLevel;
+  code: string;
+  chapter_number: number;
+  section: SectionInfo | null;
+  detail: HSDetail | null;
+  children: HSChild[];
+}
+
 export interface ClassifyRequestPayload {
   product_name: string;
   description: string;

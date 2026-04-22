@@ -1,31 +1,33 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { ApiError, getHsDetail } from "@/lib/api";
-import type { HSDetail } from "@/lib/types";
+import { ApiError, getHsLookup } from "@/lib/api";
+import type { HSChild, HSDetail, HSLookupResponse } from "@/lib/types";
+
+const VALID_LENGTHS = [2, 4, 6, 10] as const;
 
 export default function HsLookupPage() {
   const [hsCode, setHsCode] = useState("");
-  const [detail, setDetail] = useState<HSDetail | null>(null);
+  const [result, setResult] = useState<HSLookupResponse | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function onSubmit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const code = hsCode.replace(/\D/g, ""); // 숫자만
-    if (code.length !== 10) {
-      setError("HS 부호는 숫자 10자리로 입력하세요.");
+  async function lookup(raw: string) {
+    const code = raw.replace(/\D/g, "");
+    if (!VALID_LENGTHS.includes(code.length as (typeof VALID_LENGTHS)[number])) {
+      setError("HS 부호는 2(류) · 4(호) · 6(소호) · 10(세번) 자리로 입력하세요.");
       return;
     }
     setPending(true);
     setError(null);
-    setDetail(null);
+    setResult(null);
     try {
-      const res = await getHsDetail(code);
-      setDetail(res);
+      const res = await getHsLookup(code);
+      setResult(res);
+      setHsCode(code);
     } catch (err) {
       if (err instanceof ApiError) {
-        setError(err.status === 404 ? "해당 HS 부호가 DB 에 없습니다." : err.message);
+        setError(err.status === 404 ? "해당 범위에 HS 부호가 없습니다." : err.message);
       } else {
         setError(err instanceof Error ? err.message : "조회 실패");
       }
@@ -34,12 +36,17 @@ export default function HsLookupPage() {
     }
   }
 
+  function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    void lookup(hsCode);
+  }
+
   return (
     <section className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">HS 마스터 조회</h1>
         <p className="text-sm text-neutral-600">
-          10자리 HS 부호로 품명·FTA 별 관세율을 조회합니다. 데이터 출처: 관세청 UNIPASS.
+          2(류) · 4(호) · 6(소호) · 10(세번) 자리로 조회 가능. 데이터 출처: 관세청 UNIPASS.
         </p>
       </div>
 
@@ -55,7 +62,7 @@ export default function HsLookupPage() {
             maxLength={14}
             value={hsCode}
             onChange={(e) => setHsCode(e.target.value)}
-            placeholder="예: 8471300000 또는 8471.30-0000"
+            placeholder="예: 21 / 2103 / 210310 / 2103101000"
             className="w-full rounded border px-3 py-2 font-mono text-sm outline-none focus:border-neutral-500"
           />
         </label>
@@ -74,21 +81,137 @@ export default function HsLookupPage() {
         </div>
       ) : null}
 
-      {detail ? <HsDetailView detail={detail} /> : null}
+      {result ? <LookupView result={result} onDrill={lookup} /> : null}
+    </section>
+  );
+}
+
+function LookupView({
+  result,
+  onDrill,
+}: {
+  result: HSLookupResponse;
+  onDrill: (code: string) => void;
+}) {
+  return (
+    <article className="space-y-4 rounded-lg border bg-white p-5 shadow-sm">
+      <LookupHeader result={result} onDrill={onDrill} />
+      {result.level === "tariff_line" && result.detail ? (
+        <HsDetailView detail={result.detail} />
+      ) : (
+        <HsChildrenView level={result.level} children={result.children} onDrill={onDrill} />
+      )}
+    </article>
+  );
+}
+
+const LEVEL_LABEL: Record<HSLookupResponse["level"], string> = {
+  chapter: "류 (2자리)",
+  heading: "호 (4자리)",
+  subheading: "소호 (6자리)",
+  tariff_line: "세번 (10자리)",
+};
+
+function LookupHeader({
+  result,
+  onDrill,
+}: {
+  result: HSLookupResponse;
+  onDrill: (code: string) => void;
+}) {
+  const crumbs = buildBreadcrumbs(result.code);
+  return (
+    <header className="space-y-2">
+      <div className="flex items-center gap-2 text-xs text-neutral-500">
+        <span className="rounded bg-neutral-100 px-2 py-0.5 font-medium text-neutral-700">
+          {LEVEL_LABEL[result.level]}
+        </span>
+        {result.section ? (
+          <span>
+            제{result.section.roman}부 · {result.section.title_kr}
+          </span>
+        ) : null}
+      </div>
+      <h2 className="font-mono text-2xl font-bold tracking-wider">
+        {formatHs(result.code)}
+      </h2>
+      {crumbs.length > 1 ? (
+        <nav className="text-xs text-neutral-600">
+          {crumbs.map((c, i) => (
+            <span key={c.code}>
+              {i > 0 ? <span className="mx-1 text-neutral-400">›</span> : null}
+              {c.code === result.code ? (
+                <span className="font-mono">{c.label}</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onDrill(c.code)}
+                  className="font-mono text-blue-600 hover:underline"
+                >
+                  {c.label}
+                </button>
+              )}
+            </span>
+          ))}
+        </nav>
+      ) : null}
+    </header>
+  );
+}
+
+function HsChildrenView({
+  level,
+  children,
+  onDrill,
+}: {
+  level: HSLookupResponse["level"];
+  children: HSChild[];
+  onDrill: (code: string) => void;
+}) {
+  const childLabel =
+    level === "chapter" ? "호 (4자리)" : level === "heading" ? "소호 (6자리)" : "세번 (10자리)";
+  return (
+    <section>
+      <h3 className="mb-2 text-sm font-semibold text-neutral-800">
+        하위 {childLabel} — {children.length}건
+      </h3>
+      {children.length === 0 ? (
+        <p className="text-sm text-neutral-500">하위 항목이 없습니다.</p>
+      ) : (
+        <ul className="divide-y rounded border">
+          {children.map((c) => (
+            <li key={c.code}>
+              <button
+                type="button"
+                onClick={() => onDrill(c.code)}
+                className="flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-neutral-50"
+              >
+                <span className="font-mono text-sm font-medium text-blue-700">
+                  {formatHs(c.code)}
+                </span>
+                <span className="flex-1 text-sm text-neutral-700">
+                  {c.name_kr ?? "—"}
+                  {c.name_en ? (
+                    <span className="ml-2 text-xs italic text-neutral-400">{c.name_en}</span>
+                  ) : null}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-2 text-xs text-neutral-500">
+        하위 명칭은 DB 내 10자리 세번 기준 대표값입니다.
+      </p>
     </section>
   );
 }
 
 function HsDetailView({ detail }: { detail: HSDetail }) {
   return (
-    <article className="space-y-4 rounded-lg border bg-white p-5 shadow-sm">
+    <>
       <header>
-        <h2 className="font-mono text-2xl font-bold tracking-wider">
-          {formatHs(detail.hs_code)}
-        </h2>
-        <p className="mt-1 text-base text-neutral-800">
-          {detail.name_kr ?? "—"}
-        </p>
+        <p className="text-base text-neutral-800">{detail.name_kr ?? "—"}</p>
         {detail.name_en ? (
           <p className="text-sm italic text-neutral-500">{detail.name_en}</p>
         ) : null}
@@ -137,20 +260,12 @@ function HsDetailView({ detail }: { detail: HSDetail }) {
                     <td className="px-3 py-1.5">
                       <span className="font-mono">{r.fta_code}</span>
                       {r.fta_name ? (
-                        <span className="ml-2 text-xs text-neutral-500">
-                          {r.fta_name}
-                        </span>
+                        <span className="ml-2 text-xs text-neutral-500">{r.fta_name}</span>
                       ) : null}
                     </td>
-                    <td className="px-3 py-1.5 text-right">
-                      {r.tax_rate ?? "—"}
-                    </td>
-                    <td className="px-3 py-1.5 text-right">
-                      {r.per_unit_tax ?? "—"}
-                    </td>
-                    <td className="px-3 py-1.5 text-right">
-                      {r.base_price ?? "—"}
-                    </td>
+                    <td className="px-3 py-1.5 text-right">{r.tax_rate ?? "—"}</td>
+                    <td className="px-3 py-1.5 text-right">{r.per_unit_tax ?? "—"}</td>
+                    <td className="px-3 py-1.5 text-right">{r.base_price ?? "—"}</td>
                     <td className="px-3 py-1.5 text-xs text-neutral-600">
                       {r.apply_start ?? "—"}
                       {r.apply_end ? ` ~ ${r.apply_end}` : ""}
@@ -164,12 +279,22 @@ function HsDetailView({ detail }: { detail: HSDetail }) {
       </section>
 
       <p className="text-xs text-neutral-500">출처: {detail.source}</p>
-    </article>
+    </>
   );
 }
 
 function formatHs(code: string): string {
-  // 1234567890 → 1234.56-7890 (표기만)
-  if (code.length !== 10) return code;
-  return `${code.slice(0, 4)}.${code.slice(4, 6)}-${code.slice(6)}`;
+  if (code.length === 10) return `${code.slice(0, 4)}.${code.slice(4, 6)}-${code.slice(6)}`;
+  if (code.length === 6) return `${code.slice(0, 4)}.${code.slice(4)}`;
+  return code;
+}
+
+function buildBreadcrumbs(code: string): { code: string; label: string }[] {
+  const crumbs: { code: string; label: string }[] = [];
+  if (code.length >= 2) crumbs.push({ code: code.slice(0, 2), label: `제${code.slice(0, 2)}류` });
+  if (code.length >= 4) crumbs.push({ code: code.slice(0, 4), label: code.slice(0, 4) });
+  if (code.length >= 6)
+    crumbs.push({ code: code.slice(0, 6), label: `${code.slice(0, 4)}.${code.slice(4, 6)}` });
+  if (code.length === 10) crumbs.push({ code, label: formatHs(code) });
+  return crumbs;
 }

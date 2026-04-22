@@ -4,7 +4,7 @@
 
 import type {
   ClassifyRequestPayload,
-  HSDetail,
+  HSLookupResponse,
   JobCreateResponse,
   JobStatusResponse,
   JobSummary,
@@ -121,8 +121,8 @@ export async function listClassifyJobs(
 
 // ---- HS ----
 
-export async function getHsDetail(hsCode: string): Promise<HSDetail> {
-  return request<HSDetail>(`/hs/${encodeURIComponent(hsCode)}`);
+export async function getHsLookup(code: string): Promise<HSLookupResponse> {
+  return request<HSLookupResponse>(`/hs/${encodeURIComponent(code)}`);
 }
 
 export async function reviewClassifyJob(
