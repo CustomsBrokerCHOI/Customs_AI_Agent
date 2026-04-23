@@ -225,13 +225,13 @@ def test_aggregate_candidates_top_snippet_from_closest_hit() -> None:
 
 
 def test_aggregate_candidates_heading_hint_boosts_score() -> None:
-    """hint_headings 완전 일치 → score ×1.3 (상한 1.0 클립)."""
+    """hint_headings 완전 일치 → score ×HINT_HEADING_BOOST (상한 1.0 클립)."""
+    from api.services.search import HINT_HEADING_BOOST
+
     notes = [_note("3304", 0.4), _note("8471", 0.1)]
     cands = aggregate_candidates(notes, [], {}, hint_headings={"3304"})
-    # 3304: 기본 0.6 → 0.78 (boost)
-    # 8471: 기본 0.9 (no boost)
     by_h = {c.heading: c for c in cands}
-    assert by_h["3304"].score == pytest.approx(0.6 * 1.30)
+    assert by_h["3304"].score == pytest.approx(min(1.0, 0.6 * HINT_HEADING_BOOST))
     assert by_h["8471"].score == pytest.approx(0.9)
 
 
@@ -248,18 +248,20 @@ def test_aggregate_candidates_heading_hint_clips_to_one() -> None:
     """이미 점수 높은 heading 에 boost 적용해도 1.0 초과 금지."""
     notes = [_note("3304", 0.05)]  # 기본 0.95
     cands = aggregate_candidates(notes, [], {}, hint_headings={"3304"})
-    # 0.95 × 1.30 = 1.235 → clipped to 1.0
+    # boost 후 1.0 초과분은 클립
     assert cands[0].score == 1.0
 
 
 def test_aggregate_candidates_heading_boost_takes_precedence_over_chapter() -> None:
     """heading + chapter 모두 매치 시 heading boost 만 적용 (중복 없이)."""
+    from api.services.search import HINT_HEADING_BOOST
+
     notes = [_note("3304", 0.5)]
     cands = aggregate_candidates(
         notes, [], {}, hint_headings={"3304"}, hint_chapters={33}
     )
-    # 0.5 × 1.30 만 적용 (× 1.43 이 아님)
-    assert cands[0].score == pytest.approx(0.5 * 1.30)
+    # heading boost 만 적용 (chapter boost 와 중첩 금지)
+    assert cands[0].score == pytest.approx(min(1.0, 0.5 * HINT_HEADING_BOOST))
 
 
 def test_aggregate_candidates_no_hints_unchanged() -> None:

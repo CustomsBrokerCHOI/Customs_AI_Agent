@@ -29,6 +29,9 @@ from api.db.session import get_db
 from api.deps import CurrentUser
 from api.schemas.classify import (
     ClassifyRequest,
+    EnrichCitationOut,
+    EnrichRequest,
+    EnrichResponse,
     JobCreateResponse,
     JobStatusResponse,
     JobSummary,
@@ -65,6 +68,23 @@ router = APIRouter(prefix="/classify", tags=["classify"])
 def _use_real_engine() -> bool:
     """Anthropic + OpenAI 키가 모두 세팅되어 있으면 실엔진 사용."""
     return bool(settings.anthropic_api_key and settings.openai_api_key)
+
+
+def _friendly_error_message(exc: Exception) -> str:
+    """원시 예외 메시지를 관세사가 이해할 수 있는 형태로 변환.
+
+    Anthropic 429(rate_limit) / 529(overloaded) 등은 긴 JSON 이 그대로 노출되면
+    난해하므로 간단한 안내로 치환. 나머지는 기존처럼 잘라서 노출.
+    """
+    raw = str(exc)
+    if "rate_limit_error" in raw or "Error code: 429" in raw:
+        return (
+            "LLM 호출량이 잠시 한도를 초과했습니다. 1~2분 뒤 다시 시도해 주세요. "
+            "(Claude 분당 토큰 한도)"
+        )
+    if "Error code: 529" in raw or "overloaded_error" in raw:
+        return "Claude API 가 일시 혼잡 상태입니다. 잠시 뒤 재시도해 주세요."
+    return raw[:500]
 
 
 async def _run_classify_job(job_id: uuid.UUID) -> None:
@@ -116,7 +136,7 @@ async def _run_classify_job(job_id: uuid.UUID) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Classify job %s failed", job_id)
             job.status = "failed"
-            job.error_message = str(exc)[:500]
+            job.error_message = _friendly_error_message(exc)
             job.completed_at = datetime.now(timezone.utc)
 
         await db.commit()
@@ -228,6 +248,51 @@ async def get_classify_job(
     return job
 
 
+@router.post("/enrich", response_model=EnrichResponse)
+async def enrich_product(
+    payload: EnrichRequest,
+    user: CurrentUser,
+) -> EnrichResponse:
+    """Gemini Grounded Search 로 물품 정보 보강. 분류 엔진과 분리되어 있어 DB 를
+    건드리지 않고 결과만 반환한다. 관세사가 description 으로 채택하면 별도
+    POST /classify 로 분류 요청을 보낸다.
+
+    GEMINI_API_KEY 미설정 시 503. 인증된 사용자만 호출 가능.
+    """
+    if not settings.gemini_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Gemini 보강 기능이 활성화되지 않았습니다 (GEMINI_API_KEY 미설정).",
+        )
+
+    from api.services.gemini_enrich import enrich_product_info
+
+    try:
+        result = await enrich_product_info(
+            product_name=payload.product_name,
+            image_url=payload.image_url,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("gemini enrich 실패 user=%s", user.id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gemini 호출 실패: {str(exc)[:200]}",
+        ) from exc
+
+    return EnrichResponse(
+        description=result.description,
+        citations=[EnrichCitationOut(url=c.url, title=c.title) for c in result.citations],
+        queries=result.queries,
+        model=result.model,
+    )
+
+
 @router.post("/{job_id}/review", response_model=JobStatusResponse)
 async def review_classify_job(
     job_id: uuid.UUID,
@@ -293,9 +358,9 @@ async def get_report_html(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> HTMLResponse:
-    """분류의견서 HTML 렌더. 브라우저에서 직접 보거나 Ctrl+P 로 PDF 저장."""
+    """분류의견서 HTML 렌더. 유사 분류 사례 섹션을 위해 sync DB session 을 주입."""
     job = await _load_owned_job(job_id, user.id, db)
-    html_str = render_html_report(job)
+    html_str = await db.run_sync(lambda s: render_html_report(job, session=s))
     return HTMLResponse(content=html_str, status_code=200)
 
 
@@ -308,7 +373,7 @@ async def get_report_pdf(
 ) -> Response:
     """분류의견서 PDF 다운로드. weasyprint 필요 (없으면 501)."""
     job = await _load_owned_job(job_id, user.id, db)
-    html_str = render_html_report(job)
+    html_str = await db.run_sync(lambda s: render_html_report(job, session=s))
     try:
         pdf_bytes = render_pdf_report(html_str)
     except PDFUnavailable as exc:

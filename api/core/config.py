@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None  # 임베딩용
     huggingface_token: str | None = None  # bge-m3-ko 평가용
+    # Gemini Grounded Search: 물품명만/사진만 입력 시 웹 검색으로 description 보강.
+    # 미설정 시 /classify/enrich 는 503 반환하고 분류 본 플로우는 영향 없음.
+    gemini_api_key: str | None = None
 
     # --- 분류 엔진 ---
     top_k_candidates: int = Field(30, description="pgvector Top-K 후보 수")

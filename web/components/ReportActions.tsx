@@ -23,9 +23,7 @@ export function ReportActions({ jobId }: { jobId: string }) {
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 501) {
-          setError(
-            "서버에 PDF 렌더러(weasyprint) 가 설치되어 있지 않습니다. 대신 HTML 보고서를 열어 브라우저에서 Ctrl+P 로 PDF 저장하세요.",
-          );
+          setError("PDF 생성을 지원하지 않습니다. HTML 보기를 이용해 주세요.");
         } else {
           setError(err.message);
         }
@@ -58,14 +56,7 @@ export function ReportActions({ jobId }: { jobId: string }) {
           {pending ? "생성 중..." : "PDF 다운로드"}
         </button>
       </div>
-      {error ? (
-        <p className="mt-2 text-xs text-red-600">{error}</p>
-      ) : (
-        <p className="mt-2 text-xs text-neutral-500">
-          HTML 은 브라우저에서 Ctrl+P 로 PDF 저장 가능. PDF 는 서버 렌더링
-          (weasyprint).
-        </p>
-      )}
+      {error ? <p className="mt-2 text-xs text-red-600">{error}</p> : null}
     </section>
   );
 }

@@ -103,17 +103,21 @@ def test_html_report_contains_core_sections() -> None:
     assert "품목분류의견서" in html
     assert "M3 맥북에어 13인치" in html
     assert DRAFT_NOTICE in html
-    # 결론 테이블
-    assert "8471300000" in html
+    # 결론 테이블 — HS CODE 는 XXXX.XX-XXXX 로 포맷팅되어 노출
+    assert "8471.30-0000" in html
+    assert "8471300000" not in html  # raw 10자리 표기 금지
     assert "휴대용 자동자료처리기계" in html
     assert "85.0%" in html  # confidence 85%
     # 근거 조항
     assert "호 해설" in html
     assert "중량 10kg" in html
     assert "통칙" in html
-    # 분류 과정
-    assert "① 물품 식별" in html
-    assert "⑤ 호·주·해설서 RAG 검증" in html
+    # 분류 의견 — 법적 논증문 + Top-1 HS CODE 포맷 표기
+    assert "legal-opinion" in html
+    assert "분류 의견" in html
+    assert "8471.30-0000" in html  # 결론 라인에 HS 표기
+    # 유사 사례 섹션 (session 없어도 안내문은 노출)
+    assert "유사 분류 사례" in html
     # 서명란
     assert "관세사 확인" in html
     # Draft 면책
@@ -193,11 +197,48 @@ def test_html_report_notice_block_renders_when_present() -> None:
     assert "class='notice'" in html or 'class="notice"' in html
 
 
-def test_html_report_usage_shown_when_calls_present() -> None:
+def test_html_report_does_not_leak_llm_usage_tokens() -> None:
+    """LLM 토큰 사용량은 관세사 의견서에 필요한 정보가 아니므로 노출 금지."""
     html = render_html_report(_sample_job())
-    assert "LLM 사용량" in html
-    assert "1200" in html
-    assert "300" in html
+    assert "LLM 사용량" not in html
+    assert "입력 토큰" not in html
+    assert "출력 토큰" not in html
+
+
+def test_html_report_strips_markdown_from_description() -> None:
+    """Gemini 보강 description 에 섞인 마크다운 기호는 의견서 본문에서 제거."""
+    from api.services.report import _strip_markdown
+
+    # 단위 함수 검증
+    assert _strip_markdown("- **주된 용도**: 운동") == "주된 용도: 운동"
+    assert _strip_markdown("## 제목") == "제목"
+    assert _strip_markdown("일반 `코드` 텍스트") == "일반 코드 텍스트"
+    assert _strip_markdown("[링크](http://x)") == "링크"
+
+    # 전체 리포트에서도 bold·bullet 이 평문화되어 나오는지 확인
+    job = _sample_job()
+    job.description = (
+        "- **주된 용도 및 기능**: 근력 강화\n"
+        "- **주요 원재료**: 플라스틱·금속"
+    )
+    html = render_html_report(job)
+    # 원시 마크다운 흔적 없음
+    assert "**주된" not in html
+    assert "- **" not in html
+    # 평문화된 키워드는 그대로 남아 있어야 함
+    assert "주된 용도" in html
+    assert "근력 강화" in html
+
+
+def test_html_report_legal_opinion_under_2000_chars() -> None:
+    """의견서 본문은 2000자 상한 (OPINION_MAX_CHARS). 초과 시 말줄임."""
+    from api.services.report import OPINION_MAX_CHARS, _build_legal_opinion
+
+    job = _sample_job()
+    # 아주 긴 description 투입
+    huge = "매우 긴 설명. " * 1000
+    text = _build_legal_opinion(job.result["candidates"], job.product_name, huge)
+    assert len(text) <= OPINION_MAX_CHARS + 1  # 말줄임 "…" 여유 1
 
 
 # ---- render_pdf_report ----

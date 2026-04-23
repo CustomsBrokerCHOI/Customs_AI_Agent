@@ -134,6 +134,10 @@ CHAPTER_TO_SECTION: dict[int, str] = {ch: s.roman for s in SECTIONS for ch in s.
 
 ROMAN_TO_SECTION: dict[str, Section] = {s.roman: s for s in SECTIONS}
 
+# 로마숫자 → 아라비아. UI 에 병기 노출하기 위함 (예: "제XX부(제20부)").
+# SECTIONS 정의 순서를 1-based 로 매핑 — WCO 공식 부 번호와 동일.
+ROMAN_TO_ARABIC: dict[str, int] = {s.roman: i + 1 for i, s in enumerate(SECTIONS)}
+
 
 def chapter_to_section(chapter: int) -> str | None:
     """``chapter`` (1~97) → section roman. 범위 밖이면 ``None``."""
@@ -156,6 +160,11 @@ def heading_to_section(heading: str) -> str | None:
 
 def section_by_roman(roman: str) -> Section | None:
     return ROMAN_TO_SECTION.get(roman)
+
+
+def section_arabic_number(roman: str) -> int | None:
+    """로마숫자 부 번호 → 아라비아 숫자. 알 수 없는 경우 ``None``."""
+    return ROMAN_TO_ARABIC.get(roman)
 
 
 def chapters_from_romans(romans: list[str]) -> set[int]:

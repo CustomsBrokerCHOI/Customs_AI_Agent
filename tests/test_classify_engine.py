@@ -66,6 +66,8 @@ def test_build_breadcrumb_includes_section_chapter_heading_subheading() -> None:
     )
     crumbs = _build_breadcrumb(c)
     assert any("제XVI부" in cr for cr in crumbs)
+    # 아라비아 숫자 병기 — 로마숫자에 익숙하지 않은 실무 사용자 배려
+    assert any("(제16부)" in cr for cr in crumbs)
     assert any("제84류" in cr for cr in crumbs)
     assert any("제8471호" in cr for cr in crumbs)
     assert any("8471.30" in cr for cr in crumbs)
@@ -312,12 +314,13 @@ async def test_run_returns_follow_up_when_input_gate_needs_info(
 
 
 @pytest.mark.asyncio
-async def test_force_classify_bypasses_input_gate_and_widens_top_n(
+async def test_force_classify_bypasses_input_gate_and_uses_default_top_n(
     monkeypatch, fake_openai_client
 ) -> None:
     """Input Gate 가 follow-up 을 요구해도 force_classify=True 면 게이트 우회.
 
-    - 후보는 최대 FORCE_CLASSIFY_TOP_N(5) 까지 확대
+    - 후보는 기본 DEFAULT_TOP_N(3) 유지 (토큰·시간 절약 목적으로 확대 미시행).
+      대신 aggregate 단계에서 hint_headings 강제 주입으로 정답 누락 대응.
     - follow_up_questions 가 meta 에 보존되어 UI 에 노출 가능
     - notice 에 "관세사 강제 진행" 안내 포함
     """
@@ -373,11 +376,11 @@ async def test_force_classify_bypasses_input_gate_and_widens_top_n(
 
     # 게이트 우회: 후보가 비어있지 않아야 함
     assert result.candidates, "force_classify=True 인데 후보 0건"
-    # 최대 FORCE_CLASSIFY_TOP_N(5) 까지 확대
-    assert len(result.candidates) == 5
+    # 기본 Top-N(3) 유지
+    assert len(result.candidates) == 3
     # meta 에 flag + 질문 보존
     assert result.meta["force_classify"] is True
-    assert result.meta["top_n"] == 5
+    assert result.meta["top_n"] == 3
     assert result.meta["follow_up_questions"] == ["원산지?", "영양성분?"]
     # stage 에 bypass 표시
     assert result.meta["stages"]["input_gate"]["bypassed"] is True
@@ -387,13 +390,13 @@ async def test_force_classify_bypasses_input_gate_and_widens_top_n(
 
 
 @pytest.mark.asyncio
-async def test_low_confidence_candidates_are_filtered_below_threshold(
+async def test_low_confidence_candidates_shown_as_review_fallback(
     monkeypatch, fake_openai_client
 ) -> None:
-    """Deep Verify 결과가 전부 mismatch (confidence≈0) 면 필터링되어 빈 후보 + 안내.
+    """전부 mismatch (confidence≈0) 여도 fallback 으로 상위 후보 노출.
 
-    관세사에게 근거 약한 후보를 보여 혼란 주는 대신, 명시적 안내 notice 만 반환.
-    meta.filtered_below_threshold 로 drop 된 수 노출.
+    빈 화면 대신 관세사가 mismatch reasoning 을 직접 대조해 판단할 수 있도록
+    ``FALLBACK_REVIEW_COUNT`` 만큼 노출하고 notice 로 상황 안내.
     """
     from api.services import classify_engine as ce
 
@@ -441,12 +444,16 @@ async def test_low_confidence_candidates_are_filtered_below_threshold(
         top_n=2,
     )
 
-    # 둘 다 mismatch → 필터링으로 제거
-    assert result.candidates == []
-    assert result.meta["filtered_below_threshold"] == 2
+    # 둘 다 mismatch 지만 fallback 경로로 노출. 빈 결과는 아님.
+    from api.services.classify_engine import FALLBACK_REVIEW_COUNT
+
+    assert len(result.candidates) == FALLBACK_REVIEW_COUNT
+    # 모든 후보가 임계값 미만인 상태였음이 메타에 기록
     assert result.meta["min_confidence"] == 0.30
     assert "유사도 부족" in result.notice
-    assert "30%" in result.notice
+    assert "근거 검토용" in result.notice
+    # 모든 후보가 mismatch verdict 로 유지됨
+    assert all(c.verdict == "mismatch" for c in result.candidates)
 
 
 @pytest.mark.asyncio
@@ -607,7 +614,7 @@ async def test_force_classify_without_follow_ups_keeps_default_top_n_behavior(
     """force_classify=True 이지만 Input Gate 가 정보 충분하다 판단(follow_ups=[])한 경우:
 
     - 우회 경로가 아닌 정상 경로. ``bypassed=False`` 여야 함
-    - 다만 요청 플래그 자체는 meta 에 기록되고 top_n 은 여전히 확대(5)
+    - 요청 플래그 자체는 meta 에 기록되고 top_n 은 DEFAULT_TOP_N(3) 유지
     - follow_up_questions 는 meta 에 없음 (빈 배열)
     """
     from api.services import classify_engine as ce
@@ -653,9 +660,59 @@ async def test_force_classify_without_follow_ups_keeps_default_top_n_behavior(
     )
 
     assert result.meta["force_classify"] is True
-    assert result.meta["top_n"] == 5  # 여전히 확대
+    assert result.meta["top_n"] == 3
     assert result.meta["stages"]["input_gate"]["bypassed"] is False
     assert "follow_up_questions" not in result.meta
+
+
+def test_inject_hint_headings_adds_missing_hint_with_base_score() -> None:
+    """hint_headings 중 후보 풀에 없는 것은 HINT_FORCED_BASE_SCORE 로 강제 주입."""
+    from api.services.classify_engine import _inject_hint_headings
+    from api.services.search import HINT_FORCED_BASE_SCORE
+
+    class _HSStub:
+        def __init__(self, code, kr):
+            self.hs_code = code
+            self.name_kr = kr
+            self.name_en = None
+
+    existing = [
+        HSCandidate(heading="9503", hs_code="9503003700", score=0.7,
+                    name_kr="완구", section_roman="XX"),
+    ]
+    hs_master = {"9506": _HSStub("9506910000", "운동용구")}
+    forced = _inject_hint_headings(existing, {"9506"}, hs_master)
+    assert forced == ["9506"]
+    injected = next(c for c in existing if c.heading == "9506")
+    assert injected.score == HINT_FORCED_BASE_SCORE
+    assert injected.hs_code == "9506910000"
+    assert injected.name_kr == "운동용구"
+
+
+def test_inject_hint_headings_noop_when_hint_already_in_pool() -> None:
+    from api.services.classify_engine import _inject_hint_headings
+
+    existing = [
+        HSCandidate(heading="9506", hs_code="9506910000", score=0.6,
+                    name_kr="운동용구", section_roman="XX"),
+    ]
+    forced = _inject_hint_headings(existing, {"9506"}, {})
+    assert forced == []
+    assert len(existing) == 1
+    # 기존 score 유지 (부스트는 aggregate 에서 이미 적용됨)
+    assert existing[0].score == 0.6
+
+
+def test_inject_hint_headings_handles_empty_hint() -> None:
+    from api.services.classify_engine import _inject_hint_headings
+
+    existing = [
+        HSCandidate(heading="9503", hs_code="9503003700", score=0.7,
+                    name_kr="완구", section_roman="XX"),
+    ]
+    forced = _inject_hint_headings(existing, set(), {})
+    assert forced == []
+    assert len(existing) == 1
 
 
 @pytest.mark.asyncio

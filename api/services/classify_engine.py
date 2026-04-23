@@ -30,7 +30,12 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import settings
-from api.services.hs_sections import chapters_from_romans, section_by_roman
+from api.services.hs_sections import (
+    chapters_from_romans,
+    heading_to_section,
+    section_arabic_number,
+    section_by_roman,
+)
 from api.services.input_gate import (
     InputGateResult,
     extract_features,
@@ -41,6 +46,7 @@ from api.services.rag_verify import (
     verify_candidate,
 )
 from api.services.search import (
+    HINT_FORCED_BASE_SCORE,
     HSCandidate,
     SearchResult,
     SectionCandidate,
@@ -57,15 +63,17 @@ from api.services.verify import verify_search_result
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOP_N = settings.top_n_verified
-# force_classify=True 시 경합 후보 확대 상한. Input Gate 정보 부족 상태에서
-# 관세사가 "모른다" 로 진행하면 더 넓게 비교 후보를 보여준다.
-FORCE_CLASSIFY_TOP_N = 5
 DEFAULT_HSK_YEAR = 2022
 # 사용자에게 제시하는 후보의 하한 confidence (0~1). 30% 미만은 근거가 너무 약해
-# 관세사에게 혼란만 주므로 응답에서 제외. 모두 하한 미달이면 빈 후보 + 안내.
+# 관세사에게 혼란만 주므로 응답에서 제외. 모두 하한 미달이면 fallback 경로가 동작.
 MIN_CONFIDENCE = 0.30
+# force_classify 경로의 자동 완화 임계값. 해당 경로는 정보 부족 상태로 경합 후보를
+# 넓게 펼쳐 관세사 판단 보조가 목적이라 기본 30% 로는 결과가 전부 걸러지기 쉽다.
+FORCE_MIN_CONFIDENCE = 0.15
+# 전부 임계값 미달일 때도 빈 화면 대신 "근거 검토용" 으로 노출할 최소 후보 수.
+FALLBACK_REVIEW_COUNT = 2
 DRAFT_NOTICE = (
-    "⚠️ 본 결과는 AI 보조 초안(Draft)입니다. 관세사의 최종 확인 없이 세관 신고에 사용할 수 없습니다."
+    "⚠️ 본 결과는 AI 보조 초안(Draft)입니다. 관세사의 최종 확인없이 활용하지 마시기 바랍니다."
 )
 
 
@@ -192,9 +200,8 @@ async def run(
         return _build_need_info_result(ig, usage, stages)
 
     features = ig.features
-    # force_classify 경로는 Deep Verify 대상을 넓혀 "경합 후보 3~5" UX 를 충족.
-    if inp.force_classify:
-        top_n = FORCE_CLASSIFY_TOP_N
+    # Top-N 통일: force_classify 경로에서도 기본 Top-N(3) 유지. 토큰·시간 절약 목적.
+    # 대신 aggregate 단계에서 hint_headings 를 후보 풀에 강제 주입해 정답 누락을 방지.
 
     # === 3-B part 1: Section 결정 (async Claude) ===
     section_candidates: list[SectionCandidate] = await determine_sections(
@@ -326,27 +333,39 @@ async def run(
     all_candidates = _build_candidate_outs(top_candidates, verdicts)
 
     # 요청별 신뢰도 컷오프. 미지정 시 엔진 기본값.
-    threshold = (
-        inp.min_confidence_pct / 100.0
-        if inp.min_confidence_pct is not None
-        else MIN_CONFIDENCE
-    )
+    # force_classify 경로는 어차피 "경합 후보 확대" UX 이므로 기본 임계값을 15% 로 완화.
+    # 사용자가 명시적으로 min_confidence_pct 를 지정하면 그 값 우선.
+    if inp.min_confidence_pct is not None:
+        threshold = inp.min_confidence_pct / 100.0
+    elif inp.force_classify:
+        threshold = FORCE_MIN_CONFIDENCE
+    else:
+        threshold = MIN_CONFIDENCE
     threshold_pct = int(round(threshold * 100))
 
     # 하한 미만 후보 제거. rank 재부여.
     candidates_out = [c for c in all_candidates if c.confidence >= threshold]
     filtered_below = len(all_candidates) - len(candidates_out)
+
+    # 전부 임계값 미달인 경우: 빈 응답 대신 상위 2건을 "근거 검토용" 으로 노출.
+    # 관세사가 mismatch reasoning 을 직접 읽고 판단할 수 있도록. 빈 화면보다 항상 나음.
+    fallback_shown = False
+    if all_candidates and not candidates_out:
+        candidates_out = all_candidates[: FALLBACK_REVIEW_COUNT]
+        filtered_below = max(0, len(all_candidates) - len(candidates_out))
+        fallback_shown = True
+
     for i, c in enumerate(candidates_out, 1):
         c.rank = i
 
     notice = _build_notice(candidates_out, errors)
 
-    # 전부 하한 미달이면 명시적 안내.
-    if all_candidates and not candidates_out:
+    if fallback_shown:
         notice = (
-            f"[유사도 부족] 검토된 {len(all_candidates)}건 중 {threshold_pct}% 이상 "
-            f"신뢰 후보가 없습니다. 품명·설명을 보완해 재요청하거나 관세사가 직접 "
-            f"근거 조항을 대조하세요. {DRAFT_NOTICE}"
+            f"[유사도 부족] 자동 판정이 모두 {threshold_pct}% 미만이라 "
+            f"상위 {len(candidates_out)}건을 근거 검토용으로 표시합니다. "
+            f"관세사가 각 후보의 호해설·주 원문을 직접 대조해 판단하시고, "
+            f"필요하면 품명·설명을 보완해 재요청하세요. {DRAFT_NOTICE}"
         )
 
     # force_classify 경로: 원본 질문과 경합 안내를 notice 에 덧붙이고 메타에도 보존.
@@ -403,6 +422,10 @@ def _build_sync_search_callable(
         headings = list(
             {h.heading for h in note_hits} | {c.heading for c in case_hits if c.heading}
         )
+        # hint_headings 가 후보 풀에 없을 수 있으니 hs_master 조회 대상에도 포함.
+        # 없는 힌트는 강제 주입되는데, breadcrumb·name 을 채우려면 마스터가 필요.
+        if hint_headings:
+            headings = list(set(headings) | set(hint_headings))
         hs_master = _load_hs_master_for_headings(session, headings)
         hs_candidates = aggregate_candidates(
             note_hits,
@@ -411,6 +434,12 @@ def _build_sync_search_callable(
             hint_headings=hint_headings,
             hint_chapters=hint_chapters,
         )
+        forced_headings = _inject_hint_headings(hs_candidates, hint_headings or set(), hs_master)
+        if forced_headings:
+            # 부스트 점수 적용 + 기존 pgvector 후보 유지. 점수 내림차순 재정렬.
+            hs_candidates.sort(
+                key=lambda c: (-c.score, -(c.notes_hits + c.cases_hits), c.heading)
+            )
         return SearchResult(
             section_candidates=list(section_candidates),
             hs_candidates=hs_candidates,
@@ -421,10 +450,48 @@ def _build_sync_search_callable(
                 "chapters_filter": sorted(chapters) if chapters else None,
                 "hint_headings": sorted(hint_headings) if hint_headings else None,
                 "hint_chapters": sorted(hint_chapters) if hint_chapters else None,
+                "forced_hint_headings": sorted(forced_headings) if forced_headings else None,
             },
         )
 
     return _inner
+
+
+def _inject_hint_headings(
+    hs_candidates: list[HSCandidate],
+    hint_headings: set[str],
+    hs_master: dict,
+) -> list[str]:
+    """Input Gate 힌트 heading 중 후보 풀에 없는 것을 강제 주입.
+
+    힌트가 틀려도 Deep Verify 가 mismatch 로 걸러주므로 안전한 방향. 반대로
+    정답이 힌트에 있는데 pgvector 점수 밀림으로 Top-N 에 못 든 경우를 구제한다.
+
+    :returns: 실제로 강제 주입된 heading 목록 (meta 기록용).
+    """
+    if not hint_headings:
+        return []
+    existing = {c.heading for c in hs_candidates}
+    missing = [h for h in hint_headings if h not in existing]
+    if not missing:
+        return []
+    for heading in missing:
+        hs = hs_master.get(heading)
+        hs_candidates.append(
+            HSCandidate(
+                heading=heading,
+                hs_code=hs.hs_code if hs else None,
+                name_kr=hs.name_kr if hs else None,
+                name_en=hs.name_en if hs else None,
+                score=HINT_FORCED_BASE_SCORE,
+                section_roman=heading_to_section(heading),
+                notes_hits=0,
+                cases_hits=0,
+                top_snippet="[Input Gate 힌트로 강제 포함 — pgvector 상위 후보에는 없던 heading]",
+            )
+        )
+    logger.info("hint 강제 주입: headings=%s score=%.2f", missing, HINT_FORCED_BASE_SCORE)
+    return missing
 
 
 def _build_sync_bundle_callable(candidates: list[HSCandidate], hsk_year: int = DEFAULT_HSK_YEAR):
@@ -444,10 +511,6 @@ def _build_need_info_result(
     notice = (
         "정보가 부족해 분류를 진행할 수 없습니다. 다음을 보완해주세요:\n"
         + "\n".join(f"- {q}" for q in questions)
-        + (
-            "\n\n위 항목을 알 수 없으면 `force_classify=true` 로 재요청하면 "
-            "원본 정보만으로 경합 후보 최대 5건을 근거와 함께 제시합니다."
-        )
     )
     return EngineResult(
         candidates=[],
@@ -541,7 +604,12 @@ def _build_breadcrumb(c: HSCandidate) -> list[str]:
     if c.section_roman:
         s = section_by_roman(c.section_roman)
         if s:
-            parts.append(f"제{s.roman}부 {s.title_kr}")
+            # 로마·아라비아 병기: 관세율표 WCO 표준(로마) 유지 + 실무 가독성(아라비아).
+            arabic = section_arabic_number(s.roman)
+            if arabic is not None:
+                parts.append(f"제{s.roman}부(제{arabic}부) {s.title_kr}")
+            else:
+                parts.append(f"제{s.roman}부 {s.title_kr}")
     if c.heading:
         try:
             chapter = int(c.heading[:2])
@@ -550,9 +618,11 @@ def _build_breadcrumb(c: HSCandidate) -> list[str]:
             pass
         name = (c.name_kr or "").strip()
         parts.append(f"제{c.heading}호{' ' + name if name else ''}")
-    sub = _sub_heading_of(c.hs_code)
-    if sub:
-        parts.append(f"{c.heading}.{sub}")
+    # 10자리면 XXXX.XX-XXXX, 6자리까지만 있으면 XXXX.XX
+    if c.hs_code and len(c.hs_code) == 10 and c.hs_code.isdigit():
+        parts.append(f"{c.hs_code[0:4]}.{c.hs_code[4:6]}-{c.hs_code[6:10]}")
+    elif c.hs_code and len(c.hs_code) >= 6 and c.hs_code[:6].isdigit():
+        parts.append(f"{c.hs_code[0:4]}.{c.hs_code[4:6]}")
     return parts
 
 

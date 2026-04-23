@@ -71,12 +71,30 @@ export interface JobStatusResponse {
   status: JobStatus;
   product_name: string;
   description: string;
+  image_url?: string | null;
   result: ClassifyResult | null;
   error_message: string | null;
   reviewed: boolean;
   accepted_hs_code: string | null;
   created_at: string;
   completed_at: string | null;
+}
+
+export interface EnrichRequestPayload {
+  product_name: string;
+  image_url?: string;
+}
+
+export interface EnrichCitation {
+  url: string;
+  title: string | null;
+}
+
+export interface EnrichResponse {
+  description: string;
+  citations: EnrichCitation[];
+  queries: string[];
+  model: string;
 }
 
 export interface JobCreateResponse {

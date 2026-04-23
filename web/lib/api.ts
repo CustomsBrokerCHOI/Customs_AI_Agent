@@ -4,6 +4,8 @@
 
 import type {
   ClassifyRequestPayload,
+  EnrichRequestPayload,
+  EnrichResponse,
   HSLookupResponse,
   JobCreateResponse,
   JobStatusResponse,
@@ -107,6 +109,15 @@ export async function getClassifyJob(
   jobId: string,
 ): Promise<JobStatusResponse> {
   return request<JobStatusResponse>(`/classify/${jobId}`);
+}
+
+export async function enrichProductInfo(
+  payload: EnrichRequestPayload,
+): Promise<EnrichResponse> {
+  return request<EnrichResponse>("/classify/enrich", {
+    method: "POST",
+    json: payload,
+  });
 }
 
 export async function listClassifyJobs(

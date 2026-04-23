@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ApiError, listClassifyJobs } from "@/lib/api";
+import { formatHSCode } from "@/lib/hs";
 import type { JobStatus, JobSummary } from "@/lib/types";
 
 const PAGE_SIZE = 20;
@@ -116,7 +117,7 @@ export default function ClassifyHistoryPage() {
                     {j.reviewed ? "✓ 확인" : "—"}
                   </td>
                   <td className="px-4 py-2 font-mono text-sm">
-                    {j.accepted_hs_code ?? "—"}
+                    {j.accepted_hs_code ? formatHSCode(j.accepted_hs_code) : "—"}
                   </td>
                   <td className="px-4 py-2 text-sm text-neutral-600">
                     {fmtDate(j.created_at)}

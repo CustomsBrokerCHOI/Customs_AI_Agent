@@ -126,12 +126,14 @@ def test_verify_search_result_all_rejected_triggers_redetermine() -> None:
     assert result.should_re_determine is True
 
 
-def test_verify_search_result_no_candidates_does_not_trigger_redetermine() -> None:
-    # 후보 자체가 없는 경우는 3-B 의 문제이지 3-C 의 재결정 대상이 아님
+def test_verify_search_result_no_candidates_triggers_redetermine() -> None:
+    # 3-B 가 0건을 낸 경우에도 재결정 신호를 보내야 orchestrator 가 필터 제거 후
+    # 재검색한다. 이전 구현은 "hs_candidates > 0" 조건을 걸어 1회성 HNSW/임베딩
+    # 이상으로 0건이 나오면 그대로 verify_gate 에서 종료되는 버그가 있었다.
     sr = _mk_search_result(["XVI"], [])
     result = verify_search_result(sr)
     assert result.verified == []
-    assert result.should_re_determine is False
+    assert result.should_re_determine is True
 
 
 def test_verify_search_result_empty_sections_is_fail_open() -> None:

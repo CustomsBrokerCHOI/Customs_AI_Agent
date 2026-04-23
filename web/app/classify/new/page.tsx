@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { ApiError, createClassifyJob } from "@/lib/api";
 
 const MIN_CONF_LO = 31;
@@ -17,6 +17,14 @@ export default function NewClassifyPage() {
   const [minConfidenceStr, setMinConfidenceStr] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    const n = sp.get("name");
+    const d = sp.get("description");
+    if (n) setProductName(n);
+    if (d) setDescription(d);
+  }, []);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -87,19 +95,18 @@ export default function NewClassifyPage() {
 
         <label className="block">
           <span className="mb-1 block text-sm font-medium text-neutral-800">
-            상세 설명 <span className="text-red-600">*</span>
+            상세 설명
           </span>
           <textarea
-            required
             maxLength={5000}
             rows={6}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="재질·용도·주요 기능·제조 방식·치수 등을 구체적으로 기재하세요. 정보가 충실할수록 분류 정확도가 올라갑니다."
+            placeholder="재질·용도·주요 기능·제조 방식·치수 등을 구체적으로 기재하세요. 비워두면 분류 진행 중 Gemini 웹 검색으로 보강할 수 있습니다."
             className="w-full rounded border px-3 py-2 text-sm outline-none focus:border-neutral-500"
           />
           <p className="mt-1 text-xs text-neutral-500">
-            {description.length} / 5000
+            {description.length} / 5000 · 선택 항목
           </p>
         </label>
 

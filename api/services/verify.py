@@ -124,7 +124,11 @@ def verify_search_result(
     if top_n is not None:
         verified = verified[:top_n]
 
-    should_redetermine = len(verified) == 0 and len(sr.hs_candidates) > 0
+    # pgvector 자체가 0건을 낸 경우(hs_candidates 비었음)에도 fail-open 재검색이
+    # 필요하다. orchestrator 는 should_re_determine=True 를 받으면 chapter 필터를
+    # 제거하고 1회 재검색한다. 이전 구현은 `hs_candidates > 0` 조건을 달아 "검색
+    # 0건" 시 fallback 을 안 탔고, 1회성 HNSW/임베딩 이상에 종료되는 버그가 있었다.
+    should_redetermine = len(verified) == 0
 
     logger.info(
         "verify_search_result: allowed=%s verified=%d rejected=%d redet=%s",

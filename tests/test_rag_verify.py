@@ -10,6 +10,10 @@ import pytest
 from api.services.input_gate import ProductFeatures
 from api.services.rag_verify import (
     CITATION_DOWNGRADE_FACTOR,
+    CONSISTENCY_DOWNGRADE_FACTOR,
+    MAX_CHAPTER_NOTE_CHARS,
+    MAX_HEADING_NOTE_CHARS,
+    MAX_SECTION_NOTE_CHARS,
     MIN_CITATION_LEN,
     TOOL_NAME_VERIFY,
     CitationRef,
@@ -18,7 +22,9 @@ from api.services.rag_verify import (
     VerificationVerdict,
     _apply_citation_guard,
     _is_excerpt_in_source,
+    _is_verdict_inconsistent,
     _parse_verdict,
+    _render_notes_block,
     build_verification_messages,
     validate_citations,
     verify_candidate,
@@ -234,6 +240,103 @@ def test_guard_downgrades_mismatch_when_all_conflicting_unverified() -> None:
     assert out.confidence == pytest.approx(0.7 * CITATION_DOWNGRADE_FACTOR)
 
 
+def test_is_verdict_inconsistent_match_requires_matched_ge_conflicting() -> None:
+    # match 주장 — matched 없거나 conflicting 이 더 많으면 모순
+    assert _is_verdict_inconsistent("match", n_matched=0, n_conflicting=0) is True
+    assert _is_verdict_inconsistent("match", n_matched=0, n_conflicting=1) is True
+    assert _is_verdict_inconsistent("match", n_matched=1, n_conflicting=2) is True
+    assert _is_verdict_inconsistent("match", n_matched=1, n_conflicting=0) is False
+    assert _is_verdict_inconsistent("match", n_matched=2, n_conflicting=2) is False
+
+
+def test_is_verdict_inconsistent_mismatch_requires_conflicting_ge_matched() -> None:
+    # mismatch 주장 — conflicting 없거나 matched 가 더 많으면 모순
+    assert _is_verdict_inconsistent("mismatch", n_matched=0, n_conflicting=0) is True
+    assert _is_verdict_inconsistent("mismatch", n_matched=3, n_conflicting=1) is True  # SL-M2030 케이스
+    assert _is_verdict_inconsistent("mismatch", n_matched=0, n_conflicting=1) is False
+    assert _is_verdict_inconsistent("mismatch", n_matched=1, n_conflicting=1) is False
+
+
+def test_is_verdict_inconsistent_uncertain_never_forced() -> None:
+    # uncertain 은 수 기준으로 강제 판정하지 않음
+    for m, c in [(0, 0), (5, 0), (0, 5), (3, 3)]:
+        assert _is_verdict_inconsistent("uncertain", n_matched=m, n_conflicting=c) is False
+
+
+def test_guard_downgrades_mismatch_when_matched_outnumber_conflicting() -> None:
+    """실관찰된 SL-M2030 패턴: matched 3 · conflicting 1 · verdict=mismatch.
+
+    Claude 가 reasoning 은 match 로 전개하고 verdict 만 뒤집는 프롬프트 결함 대응.
+    citation 이 원문 substring 이어서 환각 가드는 통과하지만 일관성 가드가 강등.
+    """
+    b = _bundle_8471()
+    v = VerificationVerdict(
+        candidate_heading="8471",
+        verdict="mismatch",
+        confidence=0.85,
+        matched_clauses=[
+            CitationRef(source_kind="heading_note", heading="8471",
+                        excerpt="휴대용 자동자료처리기계"),
+            CitationRef(source_kind="heading_note", heading="8471",
+                        excerpt="중량 10킬로그램 이하"),
+        ],
+        conflicting_clauses=[
+            CitationRef(source_kind="chapter_note", heading="8471",
+                        excerpt="기계의 부분품은 제84.31호"),
+        ],
+        reasoning="reasoning 은 match 로 기울지만 verdict 만 뒤집힘",
+    )
+    out = _apply_citation_guard(v, b)
+    assert out.verdict == "uncertain"
+    assert out.confidence == pytest.approx(0.85 * CONSISTENCY_DOWNGRADE_FACTOR)
+    # clauses 는 유지 — 관세사가 양쪽 근거를 볼 수 있도록
+    assert len(out.matched_clauses) == 2
+    assert len(out.conflicting_clauses) == 1
+
+
+def test_guard_downgrades_match_when_conflicting_outnumber_matched() -> None:
+    """match 주장했는데 conflicting 이 더 많은 대칭 케이스."""
+    b = _bundle_8471()
+    v = VerificationVerdict(
+        candidate_heading="8471",
+        verdict="match",
+        confidence=0.7,
+        matched_clauses=[
+            CitationRef(source_kind="heading_note", heading="8471",
+                        excerpt="휴대용 자동자료처리기계"),
+        ],
+        conflicting_clauses=[
+            CitationRef(source_kind="chapter_note", heading="8471",
+                        excerpt="기계의 부분품은 제84.31호"),
+            CitationRef(source_kind="heading_note", heading="8471",
+                        excerpt="중량 10킬로그램 이하"),
+        ],
+        reasoning="x",
+    )
+    out = _apply_citation_guard(v, b)
+    assert out.verdict == "uncertain"
+    assert out.confidence == pytest.approx(0.7 * CONSISTENCY_DOWNGRADE_FACTOR)
+
+
+def test_guard_keeps_mismatch_when_conflicting_outnumber_matched() -> None:
+    """정합한 mismatch: conflicting 가 matched 보다 많거나 같으면 그대로 유지."""
+    b = _bundle_8471()
+    v = VerificationVerdict(
+        candidate_heading="8471",
+        verdict="mismatch",
+        confidence=0.6,
+        matched_clauses=[],
+        conflicting_clauses=[
+            CitationRef(source_kind="chapter_note", heading="8471",
+                        excerpt="기계의 부분품은 제84.31호"),
+        ],
+        reasoning="x",
+    )
+    out = _apply_citation_guard(v, b)
+    assert out.verdict == "mismatch"
+    assert out.confidence == 0.6
+
+
 def test_guard_passthrough_when_no_citations_provided() -> None:
     b = _bundle_8471()
     v = VerificationVerdict(
@@ -245,6 +348,52 @@ def test_guard_passthrough_when_no_citations_provided() -> None:
     out = _apply_citation_guard(v, b)
     assert out.verdict == "uncertain"
     assert out.confidence == 0.3
+
+
+# ---- notes truncation (rate-limit 대응) ----
+
+
+def test_render_notes_block_truncates_long_heading_note() -> None:
+    b = NoteBundle(
+        heading="8443",
+        hsk_year=2022,
+        notes={
+            ("heading_note", "ko"): "가" * (MAX_HEADING_NOTE_CHARS + 2000),
+        },
+    )
+    block = _render_notes_block(b)
+    # 한 줄에 heading_note 내용이 있으므로 블록 전체 길이가 상한에 근접.
+    inner = block.split('<heading_note lang="ko">\n', 1)[1].split("\n</heading_note>", 1)[0]
+    assert len(inner) <= MAX_HEADING_NOTE_CHARS
+    assert "원문 일부 생략" in inner
+
+
+def test_render_notes_block_keeps_short_note_intact() -> None:
+    short = "이 호에는 노트북 컴퓨터를 포함한다."
+    b = NoteBundle(
+        heading="8471",
+        hsk_year=2022,
+        notes={("heading_note", "ko"): short},
+    )
+    block = _render_notes_block(b)
+    assert short in block
+    assert "원문 일부 생략" not in block
+
+
+def test_render_notes_block_applies_per_kind_limits() -> None:
+    b = NoteBundle(
+        heading="8443",
+        hsk_year=2022,
+        notes={
+            ("section_note", "ko"): "부" * (MAX_SECTION_NOTE_CHARS + 500),
+            ("chapter_note", "ko"): "류" * (MAX_CHAPTER_NOTE_CHARS + 500),
+        },
+    )
+    block = _render_notes_block(b)
+    sec = block.split('<section_note lang="ko">\n', 1)[1].split("\n</section_note>", 1)[0]
+    chap = block.split('<chapter_note lang="ko">\n', 1)[1].split("\n</chapter_note>", 1)[0]
+    assert len(sec) <= MAX_SECTION_NOTE_CHARS
+    assert len(chap) <= MAX_CHAPTER_NOTE_CHARS
 
 
 # ---- build_verification_messages ----

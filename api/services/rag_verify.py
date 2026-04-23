@@ -51,6 +51,32 @@ TOOL_NAME_VERIFY = "record_verification"
 
 MIN_CITATION_LEN = 6  # 너무 짧은 citation 은 우연 매치 피하려고 기각
 CITATION_DOWNGRADE_FACTOR = 0.5  # 모든 citation 기각 시 confidence 감쇠
+# verdict 과 clauses 수가 모순일 때 uncertain 으로 강등할 때의 confidence 감쇠.
+# match 상향은 하지 않음(안전). 모순 = 관세사 검토 대상이라 약한 신호로 남긴다.
+CONSISTENCY_DOWNGRADE_FACTOR = 0.5
+
+# notes 블록 각 kind 의 글자 상한. Top-N 병렬 호출 시 Anthropic 조직 레벨 분당 토큰
+# 한도(기본 30K/min) 를 초과하지 않도록 제한한다. 한국어 ≈ 1.5-2 chars/token 이므로
+# 아래 값의 합(≈14.5K chars)은 한 호당 약 8-9K 토큰. Top-3 병렬 시 ≈25-27K 토큰으로
+# 한도 내 여유. 잘린 경우 끝에 명시 문구를 붙여 관세사가 원문 조회 필요성을 인지하게 함.
+MAX_HEADING_NOTE_CHARS = 6000
+MAX_CHAPTER_NOTE_CHARS = 4000
+MAX_SECTION_NOTE_CHARS = 3000
+MAX_GENERAL_RULE_CHARS = 1500
+_NOTE_TRUNCATE_NOTICE = "\n[원문 일부 생략 — 관세사는 원본 해설서 조회 후 최종 판단]"
+
+
+def _truncate_note(content: str, limit: int) -> str:
+    """한 note 의 content 를 ``limit`` 자까지 잘라 truncate 표시를 덧붙인다.
+
+    ``limit`` 이하면 원문 그대로 반환. 잘라낼 때는 끝 notice 분량까지 고려해
+    최종 길이가 ``limit`` 을 넘지 않도록 한다.
+    """
+    if not content or len(content) <= limit:
+        return content
+    reserve = len(_NOTE_TRUNCATE_NOTICE)
+    head = content[: max(0, limit - reserve)]
+    return head + _NOTE_TRUNCATE_NOTICE
 
 
 # ---- 출력 스키마 ----
@@ -178,16 +204,25 @@ def _escape_for_block(text: str) -> str:
     return (text or "").replace("<", "&lt;").replace(">", "&gt;")
 
 
+_KIND_CHAR_LIMITS: dict[str, int] = {
+    "general_rule": MAX_GENERAL_RULE_CHARS,
+    "section_note": MAX_SECTION_NOTE_CHARS,
+    "chapter_note": MAX_CHAPTER_NOTE_CHARS,
+    "heading_note": MAX_HEADING_NOTE_CHARS,
+}
+
+
 def _render_notes_block(bundle: NoteBundle) -> str:
-    """<notes> 블록 본문. 국문 우선, 없으면 영문."""
+    """<notes> 블록 본문. 국문 우선, 없으면 영문. kind 별 글자 상한 적용."""
     lines: list[str] = [f'<notes heading="{bundle.heading}" hsk_year="{bundle.hsk_year}">']
     for kind in VALID_KINDS:
         pick = bundle.best(kind)
         if pick is None:
             continue
         lang, content = pick
+        truncated = _truncate_note(content.strip(), _KIND_CHAR_LIMITS[kind])
         lines.append(f'<{kind} lang="{lang}">')
-        lines.append(content.strip())
+        lines.append(truncated)
         lines.append(f"</{kind}>")
     lines.append("</notes>")
     return "\n".join(lines)
@@ -286,8 +321,31 @@ def validate_citations(
     return verified, unverified
 
 
+def _is_verdict_inconsistent(verdict_name: str, n_matched: int, n_conflicting: int) -> bool:
+    """verdict 선언과 verified clause 수가 모순인지 판정.
+
+    match  : matched > 0 && matched >= conflicting 이어야 정합.
+    mismatch: conflicting > 0 && conflicting >= matched 이어야 정합.
+    uncertain: 수 기준으로는 강제 판정하지 않음 (모델 판단 존중).
+
+    예: 실관찰된 SL-M2030 케이스 (matched=3, conflicting=1, verdict=mismatch) →
+    matched 가 더 많은데 mismatch 라서 모순. uncertain 으로 강등.
+    """
+    if verdict_name == "match":
+        return n_matched == 0 or n_conflicting > n_matched
+    if verdict_name == "mismatch":
+        return n_conflicting == 0 or n_matched > n_conflicting
+    return False
+
+
 def _apply_citation_guard(verdict: VerificationVerdict, bundle: NoteBundle) -> VerificationVerdict:
-    """환각 가드 적용. matched 가 전부 기각되면 verdict 강등 + confidence 감쇠."""
+    """환각 가드 + verdict-clauses 일관성 가드 적용.
+
+    1. 환각 가드: matched/conflicting 인용이 원문 substring 이 아니면 기각.
+       기각 후 verdict 측 clauses 가 전부 비어버리면 uncertain 강등 + confidence 감쇠.
+    2. 일관성 가드: 환각 가드 통과 후에도 verdict 선언이 남은 clauses 수와 모순이면
+       uncertain 강등 + confidence 감쇠. match 로 상향하지는 않는다 (안전한 방향만).
+    """
     m_verified, m_unverified = validate_citations(verdict.matched_clauses, bundle)
     c_verified, c_unverified = validate_citations(verdict.conflicting_clauses, bundle)
 
@@ -297,7 +355,6 @@ def _apply_citation_guard(verdict: VerificationVerdict, bundle: NoteBundle) -> V
     new_conf = verdict.confidence
 
     if verdict.verdict == "match" and not m_verified and verdict.matched_clauses:
-        # matched 전부 기각 → uncertain 강등
         new_verdict = "uncertain"
         new_conf = verdict.confidence * CITATION_DOWNGRADE_FACTOR
         logger.warning(
@@ -311,6 +368,16 @@ def _apply_citation_guard(verdict: VerificationVerdict, bundle: NoteBundle) -> V
             "환각 가드: heading=%s conflicting clauses 전부 미검증 → uncertain 강등",
             verdict.candidate_heading,
         )
+    elif _is_verdict_inconsistent(new_verdict, len(m_verified), len(c_verified)):
+        logger.warning(
+            "일관성 가드: heading=%s verdict=%s 와 clauses(matched=%d, conflicting=%d) 모순 → uncertain 강등",
+            verdict.candidate_heading,
+            new_verdict,
+            len(m_verified),
+            len(c_verified),
+        )
+        new_verdict = "uncertain"
+        new_conf = new_conf * CONSISTENCY_DOWNGRADE_FACTOR
 
     return VerificationVerdict(
         candidate_heading=verdict.candidate_heading,

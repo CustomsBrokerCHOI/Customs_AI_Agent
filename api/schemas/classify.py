@@ -12,7 +12,9 @@ class ClassifyRequest(BaseModel):
     """관세사 분류 요청."""
 
     product_name: str = Field(min_length=1, max_length=500)
-    description: str = Field(min_length=1, max_length=5000)
+    # description 은 선택(빈 문자열 허용). 부족할 경우 Input Gate 가 follow-up 을 내고,
+    # 관세사는 UI 에서 Gemini Grounded Search 보강을 요청할 수 있다.
+    description: str = Field(default="", max_length=5000)
     image_url: str | None = Field(None, max_length=500)
     # 관세사가 Input Gate 후속 질문을 "모른다/넘어간다" 로 판단한 경우 True.
     # 엔진은 원본 입력만으로 경합 후보 최대 5개 + 근거를 반환한다.
@@ -21,6 +23,25 @@ class ClassifyRequest(BaseModel):
     # 허용 범위는 31~69 (경계 30·70 제외): 30% 이하는 근거가 너무 약해 혼란만 주고,
     # 70% 이상은 거의 모든 후보가 탈락해 빈 결과가 양산되기 때문.
     min_confidence_pct: int | None = Field(None, gt=30, lt=70)
+
+
+class EnrichRequest(BaseModel):
+    """Gemini Grounded Search 보강 요청. 물품명/사진 중 하나 이상 필요."""
+
+    product_name: str = Field(min_length=1, max_length=500)
+    image_url: str | None = Field(None, max_length=500)
+
+
+class EnrichCitationOut(BaseModel):
+    url: str
+    title: str | None = None
+
+
+class EnrichResponse(BaseModel):
+    description: str
+    citations: list[EnrichCitationOut] = []
+    queries: list[str] = []
+    model: str
 
 
 class Citation(BaseModel):
@@ -72,6 +93,8 @@ class JobStatusResponse(BaseModel):
     status: str  # pending / processing / complete / failed / cancelled
     product_name: str
     description: str
+    # Gemini 보강 시 이전 잡의 image_url 을 재활용하기 위해 응답에 포함.
+    image_url: str | None = None
     result: ClassifyResult | None = None
     error_message: str | None = None
     reviewed: bool

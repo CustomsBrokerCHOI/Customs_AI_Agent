@@ -133,13 +133,6 @@ export function StageTimeline({ meta }: { meta?: EngineMeta }) {
           </li>
         ))}
       </ol>
-      {meta?.usage ? (
-        <p className="mt-4 border-t pt-3 text-xs text-neutral-500">
-          LLM 사용량: {meta.usage.calls ?? 0} 회 호출 · 입력{" "}
-          {meta.usage.input_tokens?.toLocaleString() ?? 0} / 출력{" "}
-          {meta.usage.output_tokens?.toLocaleString() ?? 0} 토큰
-        </p>
-      ) : null}
     </section>
   );
 }

@@ -45,10 +45,15 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 1024
 DEFAULT_TOP_K = settings.top_k_candidates
 CASE_SCORE_WEIGHT = 0.85  # case 거리에 곱해 "부스트" (거리 감소 = 점수 증가)
-# Input Gate 힌트 매치에 따른 score 승수. 해설서 substring 검증이 후단에서 걸러주므로
-# 공격적으로 부스트해도 오분류로 직결되지 않는다.
-HINT_HEADING_BOOST = 1.30
+# Input Gate 힌트 매치에 따른 score 승수. 해설서 substring 검증(Deep Verify)이
+# 후단에서 걸러주므로 공격적 부스트해도 오분류로 직결되지 않는다. 실관찰(자이로볼)
+# 에서 1.30 은 pgvector 상위 후보에 밀려 정답 heading 이 Top-N 에 못 드는 사례가
+# 있어 1.80 으로 상향. hint_chapter 는 위치만 좁히는 약한 신호라 1.10 유지.
+HINT_HEADING_BOOST = 1.80
 HINT_CHAPTER_BOOST = 1.10
+# Input Gate 가 낸 hint_heading 이 pgvector 검색 후보에 아예 없을 때 강제 주입하는
+# 기본 점수. 상위 pgvector 후보(대개 0.5-0.7) 와 경쟁 가능한 수준.
+HINT_FORCED_BASE_SCORE = 0.60
 
 TOOL_NAME_SECTION = "propose_sections"
 

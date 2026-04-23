@@ -1,9 +1,13 @@
 import type { Candidate } from "@/lib/types";
+import { formatHSCode } from "@/lib/hs";
 import { CitationPopover } from "./CitationPopover";
 import { VerdictBadge } from "./VerdictBadge";
 
 export function CandidateCard({ candidate }: { candidate: Candidate }) {
   const confidencePct = Math.round(candidate.confidence * 1000) / 10;
+  const display = candidate.hs_code
+    ? formatHSCode(candidate.hs_code)
+    : candidate.heading;
   return (
     <article className="rounded-lg border bg-white p-4 shadow-sm">
       <header className="flex items-center justify-between gap-4">
@@ -12,7 +16,7 @@ export function CandidateCard({ candidate }: { candidate: Candidate }) {
             #{candidate.rank}
           </span>
           <h3 className="font-mono text-xl font-bold tracking-wider">
-            {candidate.hs_code ?? candidate.heading}
+            {display}
           </h3>
           <VerdictBadge verdict={candidate.verdict} />
         </div>

@@ -259,6 +259,8 @@ def test_report_html_owner_complete_returns_html(authed_client) -> None:
     client, db, user = authed_client
     job = _make_job(user.id, status="complete")
     db.get = AsyncMock(return_value=job)
+    # run_sync: 실제 DB 없으므로 sync 콜러블을 None session 으로 호출한 결과만 돌려줌.
+    db.run_sync = AsyncMock(side_effect=lambda fn: fn(None))
 
     r = client.get(f"/classify/{job.id}/report.html")
     assert r.status_code == 200
@@ -293,6 +295,7 @@ def test_report_pdf_501_when_weasyprint_missing(authed_client, monkeypatch) -> N
     client, db, user = authed_client
     job = _make_job(user.id, status="complete")
     db.get = AsyncMock(return_value=job)
+    db.run_sync = AsyncMock(side_effect=lambda fn: fn(None))
 
     # weasyprint import 를 강제로 실패시킴
     import builtins
@@ -315,6 +318,7 @@ def test_report_pdf_200_when_weasyprint_mocked(authed_client, monkeypatch) -> No
     client, db, user = authed_client
     job = _make_job(user.id, status="complete")
     db.get = AsyncMock(return_value=job)
+    db.run_sync = AsyncMock(side_effect=lambda fn: fn(None))
 
     import sys
     import types as pytypes

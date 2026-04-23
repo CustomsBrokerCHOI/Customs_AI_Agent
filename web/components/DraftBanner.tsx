@@ -7,7 +7,7 @@ export function DraftBanner() {
       className="border border-draft-border bg-draft-bg text-draft-text text-sm px-4 py-2 rounded-md"
     >
       <strong className="font-semibold">Draft</strong> — 본 도구의 분류 결과는 초안입니다.
-      관세사의 최종 확인·서명 없이 세관 신고에 사용할 수 없습니다.
+      관세사의 최종 확인없이 활용하지 마시기 바랍니다.
     </div>
   );
 }
