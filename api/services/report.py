@@ -239,9 +239,25 @@ def _fetch_similar_cases(
                 "product_name": r.product_name,
                 "decision_date": r.decision_date,
                 "source_url": r.source_url,
+                "description": r.description,
+                "reasoning": r.reasoning,
             }
         )
     return cases
+
+
+# 유사사례 인라인 본문 길이 상한. 길면 판단이유가 의견서 본문을 압도하므로 말줄임.
+_SIMILAR_DESC_MAX = 260
+_SIMILAR_REASON_MAX = 500
+
+
+def _truncate(text: str | None, limit: int) -> str:
+    if not text:
+        return ""
+    t = _strip_markdown(text).strip()
+    if len(t) <= limit:
+        return t
+    return t[:limit].rstrip() + "…"
 
 
 def _render_similar_cases(cases: list[dict]) -> str:
@@ -250,7 +266,7 @@ def _render_similar_cases(cases: list[dict]) -> str:
             "<p><em>유사 분류 사례가 DB 에 없습니다. "
             "품목분류사례 원문 DB(CLIP) 를 직접 조회하실 것을 권합니다.</em></p>"
         )
-    rows: list[str] = []
+    blocks: list[str] = []
     for c in cases:
         hs_display = _esc(_fmt_hs_code(c.get("hs_code") or ""))
         case_ref = _esc(c.get("case_ref") or "—")
@@ -258,26 +274,48 @@ def _render_similar_cases(cases: list[dict]) -> str:
         dt = c.get("decision_date")
         date_str = dt.strftime("%Y-%m-%d") if dt else ""
         src = c.get("source_url") or ""
-        ref_cell = (
-            f'<a href="{_esc(src)}" target="_blank" rel="noreferrer">{case_ref}</a>'
-            if src else case_ref
+        description_html = _esc(_truncate(c.get("description"), _SIMILAR_DESC_MAX))
+        reasoning_html = _esc(_truncate(c.get("reasoning"), _SIMILAR_REASON_MAX))
+
+        meta_parts: list[str] = []
+        meta_parts.append(f"<span class='case-ref'>사례번호 {case_ref}</span>")
+        if hs_display:
+            meta_parts.append(f"<span class='mono'>{hs_display}</span>")
+        if date_str:
+            meta_parts.append(f"<span>{_esc(date_str)}</span>")
+        if src:
+            # 링크가 있어도 인라인 본문을 먼저 노출해야 판단이유가 가려지지 않음.
+            meta_parts.append(
+                f"<a href='{_esc(src)}' target='_blank' rel='noreferrer'>원문 보기 ↗</a>"
+            )
+        meta_html = "<span class='case-meta-sep'> · </span>".join(meta_parts)
+
+        body_parts: list[str] = []
+        if product:
+            body_parts.append(f"<p class='case-product'><strong>품명:</strong> {product}</p>")
+        if description_html:
+            body_parts.append(
+                f"<p class='case-description'><strong>설명:</strong> {description_html}</p>"
+            )
+        if reasoning_html:
+            body_parts.append(
+                "<div class='case-reasoning'>"
+                "<div class='case-reasoning-label'>판단이유</div>"
+                f"<blockquote>{reasoning_html}</blockquote>"
+                "</div>"
+            )
+        if not body_parts:
+            body_parts.append(
+                "<p class='case-empty'><em>상세 설명·판단이유가 기록되지 않음.</em></p>"
+            )
+
+        blocks.append(
+            "<article class='similar-case'>"
+            f"<header class='case-meta'>{meta_html}</header>"
+            f"{''.join(body_parts)}"
+            "</article>"
         )
-        rows.append(
-            "<tr>"
-            f"<td>{ref_cell}</td>"
-            f"<td class='mono'>{hs_display}</td>"
-            f"<td>{product}</td>"
-            f"<td class='num'>{_esc(date_str)}</td>"
-            "</tr>"
-        )
-    return (
-        "<table class='similar-cases'>"
-        "<thead><tr>"
-        "<th>사례번호</th><th>HS CODE</th><th>품명</th><th>결정일</th>"
-        "</tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody>"
-        "</table>"
-    )
+    return f"<div class='similar-cases-list'>{''.join(blocks)}</div>"
 
 
 def _build_legal_opinion(
@@ -413,7 +451,41 @@ blockquote { margin: 2pt 0 6pt; padding: 4pt 8pt; border-left: 2pt solid #d1d5db
   background: #f9fafb;
   font-size: 10.5pt;
 }
-.similar-cases td.num { text-align: center; white-space: nowrap; }
+.similar-cases-list { display: block; margin: 8pt 0; }
+.similar-case {
+  border: 0.5pt solid #d1d5db;
+  border-radius: 4pt;
+  padding: 8pt 10pt;
+  margin: 8pt 0;
+  background: #fafafa;
+  page-break-inside: avoid;
+}
+.similar-case .case-meta {
+  font-size: 10pt;
+  color: #4b5563;
+  margin-bottom: 6pt;
+  padding-bottom: 4pt;
+  border-bottom: 0.3pt dashed #d1d5db;
+}
+.similar-case .case-meta .case-ref { color: #111827; font-weight: 600; }
+.similar-case .case-meta a { color: #1d4ed8; text-decoration: underline; }
+.similar-case .case-meta-sep { color: #9ca3af; margin: 0 2pt; }
+.similar-case p { margin: 3pt 0; font-size: 10.5pt; }
+.similar-case .case-product { color: #111827; }
+.similar-case .case-description { color: #1f2937; }
+.similar-case .case-reasoning { margin-top: 6pt; }
+.similar-case .case-reasoning-label {
+  font-size: 9.5pt;
+  font-weight: 600;
+  color: #6b7280;
+  margin-bottom: 2pt;
+}
+.similar-case .case-reasoning blockquote {
+  margin: 0;
+  font-size: 10pt;
+  line-height: 1.55;
+}
+.similar-case .case-empty { color: #6b7280; }
 .signature { margin-top: 30pt; border-top: 1pt solid #d1d5db; padding-top: 12pt; }
 .signature .line { display: inline-block; width: 12em; border-bottom: 1pt solid #111827; margin: 0 8pt; }
 .disclaimer { font-size: 9.5pt; color: #6b7280; margin-top: 16pt; }

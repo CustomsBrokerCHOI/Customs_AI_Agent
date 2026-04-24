@@ -21,6 +21,7 @@ from api.services.search import (
     CASE_SCORE_WEIGHT,
     TOOL_NAME_SECTION,
     CaseHit,
+    HSCandidate,
     NoteHit,
     _features_brief,
     aggregate_candidates,
@@ -279,36 +280,133 @@ def test_aggregate_candidates_tiebreak_by_hit_count() -> None:
     assert cands[1].heading == "6109"
 
 
-# ---- determine_sections (Claude 모킹) ----
+# ---- Sprint B: apply_inclusion_boost ----
 
 
-def _tool_use_block(name: str, payload: dict) -> SimpleNamespace:
-    return SimpleNamespace(type="tool_use", name=name, input=payload)
+def test_apply_inclusion_boost_lifts_matching_chapter_candidates() -> None:
+    """매치된 chapter 의 후보 heading 이 +0.25 (additive) 로 부스트 + 재정렬."""
+    from api.services.search import INCLUSION_BOOST_ADDITIVE, apply_inclusion_boost
+
+    cands = [
+        HSCandidate(heading="1106", score=0.80, notes_hits=3, cases_hits=2),
+        HSCandidate(heading="0712", score=0.40, notes_hits=1, cases_hits=0),
+        HSCandidate(heading="0902", score=0.55, notes_hits=2, cases_hits=0),
+    ]
+    # 07류 매치 (Kale Powder 케이스)
+    matched = {"07": ["건조한 채소", "채소의 가루"]}
+
+    out = apply_inclusion_boost(cands, matched)
+    # 07류인 0712 가 0.40 + 0.25 = 0.65 로 올라감. 1106 (0.80) 다음.
+    assert out[0].heading == "1106"
+    assert out[0].score == pytest.approx(0.80)
+    assert out[1].heading == "0712"
+    assert out[1].score == pytest.approx(0.40 + INCLUSION_BOOST_ADDITIVE)
+    assert out[2].heading == "0902"
 
 
-def _make_section_response(candidates: list[dict]) -> SimpleNamespace:
-    return SimpleNamespace(
-        content=[_tool_use_block(TOOL_NAME_SECTION, {"candidates": candidates})],
-        stop_reason="tool_use",
-        usage=SimpleNamespace(input_tokens=50, output_tokens=30),
+def test_apply_inclusion_boost_clips_to_one() -> None:
+    """부스트가 1.0 을 넘지 않도록 클램프."""
+    from api.services.search import apply_inclusion_boost
+
+    cands = [HSCandidate(heading="0712", score=0.90)]
+    out = apply_inclusion_boost(cands, {"07": ["건조한 채소"]})
+    assert out[0].score == pytest.approx(1.0)
+
+
+def test_apply_inclusion_boost_empty_matches_returns_original() -> None:
+    from api.services.search import apply_inclusion_boost
+
+    cands = [HSCandidate(heading="1106", score=0.70)]
+    out = apply_inclusion_boost(cands, {})
+    assert out is cands  # early return — 동일 객체
+
+
+def test_apply_inclusion_boost_ignores_non_matching_chapter() -> None:
+    from api.services.search import apply_inclusion_boost
+
+    cands = [
+        HSCandidate(heading="1106", score=0.80),
+        HSCandidate(heading="0712", score=0.40),
+    ]
+    # 20류 매치라고 가정 — 1106(11류), 0712(07류) 모두 해당 안 됨.
+    out = apply_inclusion_boost(cands, {"20": ["조제한 채소"]})
+    assert out[0].score == pytest.approx(0.80)
+    assert out[1].score == pytest.approx(0.40)
+
+
+def test_find_matching_chapters_by_inclusion_substring_hit(
+    _fake_session_factory=None,
+) -> None:
+    """hs_nodes 테이블 쿼리 없이 find_matching 로직의 정규화·매칭 확인."""
+    from api.services.search import _normalize_for_lookup
+
+    # 한글 substring 매칭 확인.
+    haystack = _normalize_for_lookup("Curly Kale Powder 건조한 채소 분말")
+    needle = _normalize_for_lookup("건조한 채소")
+    assert needle in haystack
+
+    # 전각·반각 정규화.
+    assert _normalize_for_lookup("케일（건조）") == _normalize_for_lookup("케일(건조)")
+
+
+def test_matches_phrase_substring_mode() -> None:
+    """phrase 가 haystack 에 통째 등장하면 hit."""
+    from api.services.search import _matches_phrase
+
+    haystack = "curly kale powder 컬리 케일 건조한 채소 분말"
+    assert _matches_phrase("건조한 채소", haystack) is True
+    assert _matches_phrase("케일", haystack) is True
+
+
+def test_matches_phrase_token_and_mode() -> None:
+    """phrase 가 그대로 없어도 모든 토큰이 haystack 에 있으면 hit."""
+    from api.services.search import _matches_phrase
+
+    haystack = "곱슬 케일 잎을 세척 건조 후 분쇄하여 분말"
+    # "건조한 채소" phrase 그대로는 없음. 토큰 ["건조한","채소"] 중 "채소" 없음 → miss.
+    assert _matches_phrase("건조한 채소", haystack) is False
+    # 토큰 모두 있는 phrase → hit.
+    assert _matches_phrase("케일 분쇄", haystack) is True
+    # 단일 토큰 phrase 는 substring 으로만 hit. token AND 모드 발동 안 함.
+    assert _matches_phrase("토마토", haystack) is False
+
+
+def test_matches_phrase_short_tokens_not_token_mode() -> None:
+    """토큰이 한 개뿐이면 token AND 매칭 모드 미발동 (거짓양성 방지)."""
+    from api.services.search import _matches_phrase
+
+    # "잎" 1자만으로는 매치 금지 (substring 검사도 길이 조건).
+    haystack = "케일 잎"
+    # 단일 토큰은 substring 매칭만 시도. "잎" substring 매칭은 됨.
+    assert _matches_phrase("잎", haystack) is True
+    # 한 개 토큰 phrase 가 haystack 에 없으면 miss.
+    assert _matches_phrase("브로콜리", haystack) is False
+
+
+# ---- determine_sections (PydanticAI TestModel) ----
+
+
+def _section_override(candidates: list[dict]):
+    """pydantic-ai TestModel 로 section agent 출력을 고정."""
+    from pydantic_ai.models.test import TestModel
+
+    from api.services.search import _section_agent
+
+    return _section_agent().override(
+        model=TestModel(custom_output_args={"candidates": candidates})
     )
 
 
 @pytest.mark.asyncio
 async def test_determine_sections_happy_path_sorted_by_confidence() -> None:
-    client = AsyncMock()
-    client.messages.create = AsyncMock(
-        return_value=_make_section_response(
-            [
-                {"section_roman": "XI", "confidence": 0.4, "reasoning": "면 혼방"},
-                {"section_roman": "XVI", "confidence": 0.8, "reasoning": "전자기기"},
-            ]
-        )
-    )
-
     f = _mk_features(product_name_normalized="노트북")
-    out = await determine_sections(f, client=client)
-
+    with _section_override(
+        [
+            {"section_roman": "XI", "confidence": 0.4, "reasoning": "면 혼방"},
+            {"section_roman": "XVI", "confidence": 0.8, "reasoning": "전자기기"},
+        ]
+    ):
+        out = await determine_sections(f)
     # confidence 내림차순 정렬
     assert [s.section_roman for s in out] == ["XVI", "XI"]
     assert out[0].confidence == 0.8
@@ -316,47 +414,21 @@ async def test_determine_sections_happy_path_sorted_by_confidence() -> None:
 
 @pytest.mark.asyncio
 async def test_determine_sections_filters_unknown_roman() -> None:
-    client = AsyncMock()
-    client.messages.create = AsyncMock(
-        return_value=_make_section_response(
-            [
-                {"section_roman": "XVI", "confidence": 0.9, "reasoning": "ok"},
-                {"section_roman": "ZZ", "confidence": 0.5, "reasoning": "invalid"},
-            ]
-        )
-    )
     f = _mk_features()
-    out = await determine_sections(f, client=client)
+    with _section_override(
+        [
+            {"section_roman": "XVI", "confidence": 0.9, "reasoning": "ok"},
+            {"section_roman": "ZZ", "confidence": 0.5, "reasoning": "invalid"},
+        ]
+    ):
+        out = await determine_sections(f)
     assert [s.section_roman for s in out] == ["XVI"]
 
 
-@pytest.mark.asyncio
-async def test_determine_sections_raises_when_no_tool_use() -> None:
-    client = AsyncMock()
-    client.messages.create = AsyncMock(
-        return_value=SimpleNamespace(
-            content=[SimpleNamespace(type="text", text="no call")],
-            stop_reason="end_turn",
-            usage=None,
-        )
-    )
-    with pytest.raises(RuntimeError, match="tool_use"):
-        await determine_sections(_mk_features(), client=client)
+def test_section_prompt_lists_all_21_sections() -> None:
+    """system 프롬프트에 21개 섹션이 모두 나열되어 있어야 함."""
+    from api.services.search import load_section_prompt
 
-
-@pytest.mark.asyncio
-async def test_determine_sections_passes_correct_tool_config() -> None:
-    client = AsyncMock()
-    client.messages.create = AsyncMock(
-        return_value=_make_section_response(
-            [{"section_roman": "XVI", "confidence": 0.9, "reasoning": "ok"}]
-        )
-    )
-    await determine_sections(_mk_features(), client=client)
-    kwargs = client.messages.create.await_args.kwargs
-    assert kwargs["tool_choice"] == {"type": "tool", "name": TOOL_NAME_SECTION}
-    assert len(kwargs["tools"]) == 1
-    assert kwargs["tools"][0]["name"] == TOOL_NAME_SECTION
-    # system 프롬프트에 21개 섹션이 나열되어 있어야 함
-    assert "XVI" in kwargs["system"]
-    assert "XI" in kwargs["system"]
+    prompt = load_section_prompt()
+    for s in SECTIONS:
+        assert s.roman in prompt, f"섹션 {s.roman} 프롬프트에 없음"

@@ -165,15 +165,24 @@ async def run(
     db: AsyncSession,
     *,
     openai_client: Any = None,
-    claude_client: Any = None,
+    claude_client: Any = None,  # DEPRECATED — 무시. 하위 호환용 파라미터로만 존재.
     top_n: int = DEFAULT_TOP_N,
 ) -> EngineResult:
     """5단계 알고리즘 전체 실행.
 
+    LLM 라우팅
+    ----------
+    PydanticAI 가 단계별 ``settings.<stage>_model`` + fallback 으로 자동 라우팅한다
+    (입력·Search 는 Gemini Flash, Deep Verify 는 Claude 가 기본). ``claude_client``
+    인자는 더 이상 사용하지 않으며 하위 호환을 위해서만 남겨둔다.
+
     :param db: AsyncSession. 서비스 계층 sync 호출은 ``db.run_sync`` 로 래핑.
     :param openai_client: sync OpenAI. None 이면 settings 로 생성.
-    :param claude_client: AsyncAnthropic. None 이면 settings 로 생성.
     """
+    if claude_client is not None:
+        logger.warning(
+            "classify.run: claude_client 인자는 deprecated. settings 의 stage 모델 설정을 사용하세요."
+        )
     logger.info(
         "classify.run start: product=%r force_classify=%s",
         inp.product_name[:60],
@@ -184,7 +193,7 @@ async def run(
 
     # === 3-A Input Gate ===
     ig: InputGateResult = await extract_features(
-        inp.product_name, inp.description, inp.image_url, client=claude_client
+        inp.product_name, inp.description, inp.image_url
     )
     usage.add_from_meta(ig.meta)
     stages["input_gate"] = {
@@ -203,10 +212,8 @@ async def run(
     # Top-N 통일: force_classify 경로에서도 기본 Top-N(3) 유지. 토큰·시간 절약 목적.
     # 대신 aggregate 단계에서 hint_headings 를 후보 풀에 강제 주입해 정답 누락을 방지.
 
-    # === 3-B part 1: Section 결정 (async Claude) ===
-    section_candidates: list[SectionCandidate] = await determine_sections(
-        features, client=claude_client
-    )
+    # === 3-B part 1: Section 결정 (PydanticAI → settings.search_model) ===
+    section_candidates: list[SectionCandidate] = await determine_sections(features)
     stages["sections"] = [
         {"roman": s.section_roman, "confidence": s.confidence} for s in section_candidates
     ]
@@ -236,6 +243,7 @@ async def run(
         _build_sync_search_callable(
             query_vec, chapters_combined, k, section_candidates, query_text,
             hint_headings=hint_headings, hint_chapters=hint_chapters,
+            description=inp.description,
         )
     )
     stages["search"] = {
@@ -245,6 +253,7 @@ async def run(
         "chapters_filter": sorted(chapters_combined) if chapters_combined else None,
         "hint_chapters": sorted(hint_chapters) if hint_chapters else None,
         "hint_headings": sorted(hint_headings) if hint_headings else None,
+        "inclusion_boost_chapters": search_result.meta.get("inclusion_boost_chapters"),
     }
 
     # === 3-C Verification Gate ===
@@ -263,6 +272,7 @@ async def run(
             _build_sync_search_callable(
                 query_vec, set(), k, section_candidates, query_text,
                 hint_headings=hint_headings, hint_chapters=hint_chapters,
+                description=inp.description,
             )
         )
         verified_pool: list[HSCandidate] = search_result.hs_candidates[: top_n * 2]
@@ -291,7 +301,7 @@ async def run(
     bundles = await db.run_sync(_build_sync_bundle_callable(top_candidates, hsk_year=inp.hsk_year))
 
     tasks = [
-        verify_candidate(features, c, b, client=claude_client)
+        verify_candidate(features, c, b)
         for c, b in zip(top_candidates, bundles, strict=True)
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -305,12 +315,22 @@ async def run(
         else:
             verdicts.append(res)
 
+    # Sprint A 추가: deterministic exclusion 건수(reasoning 에 "자동 배제 게이트" 표식).
+    # 이 값이 올라갈수록 LLM 호출이 절감됐다는 신호 = 비용·레이턴시 이득.
+    det_exclusion_count = sum(
+        1 for v in verdicts if "자동 배제 게이트" in (v.reasoning or "")
+    )
+    llm_invoked_count = len(verdicts) - det_exclusion_count
+
     stages["deep_verify"] = {
         "processed": len(top_candidates),
         "success": len(verdicts),
         "match": sum(1 for v in verdicts if v.verdict == "match"),
         "mismatch": sum(1 for v in verdicts if v.verdict == "mismatch"),
         "uncertain": sum(1 for v in verdicts if v.verdict == "uncertain"),
+        # Sprint A: hs_nodes 결정적 배제 게이트 통계.
+        "deterministic_exclusions": det_exclusion_count,
+        "llm_invocations": llm_invoked_count,
         "errors": errors,
         # 진단용: Deep Verify 에 실제 어떤 heading 이 갔고 각 verdict 가 무엇인지.
         # filter 후 후보 0건 상황에서도 관찰 가능하도록 meta 에 보존.
@@ -323,6 +343,8 @@ async def run(
                 "matched": len(v.matched_clauses),
                 "conflicting": len(v.conflicting_clauses),
                 "unverified": len(v.unverified_citations),
+                # 결정적 배제로 걸러진 후보는 LLM 호출 없음.
+                "deterministic_exclusion": "자동 배제 게이트" in (v.reasoning or ""),
             }
             for v in verdicts
         ],
@@ -414,6 +436,7 @@ def _build_sync_search_callable(
     *,
     hint_headings: set[str] | None = None,
     hint_chapters: set[int] | None = None,
+    description: str | None = None,
 ):
     def _inner(session) -> SearchResult:
         filt = chapters or None
@@ -440,6 +463,22 @@ def _build_sync_search_callable(
             hs_candidates.sort(
                 key=lambda c: (-c.score, -(c.notes_hits + c.cases_hits), c.heading)
             )
+
+        # Sprint B: hs_nodes 수동 교정 inclusion_keywords 기반 positive boost.
+        # 매칭 haystack = build_query_text 결과(features 정형화) + 사용자 description 원문
+        # (Gemini 보강·보완답변 포함). description 까지 포함해야 "잎을 건조·분쇄" 같은
+        # 자연어 표현이 inclusion_keywords 와 substring 으로 만나 정답 heading 부스트가
+        # 발동한다. features 만으로는 "케일·건조" 토큰이 공백 사이로 떨어져 phrase 매칭
+        # 실패한다.
+        from api.services.search import apply_inclusion_boost, find_matching_chapters_by_inclusion
+
+        inclusion_haystack = query_text
+        if description:
+            inclusion_haystack = f"{query_text}\n{description}"
+        inclusion_matches = find_matching_chapters_by_inclusion(session, inclusion_haystack)
+        if inclusion_matches:
+            hs_candidates = apply_inclusion_boost(hs_candidates, inclusion_matches)
+
         return SearchResult(
             section_candidates=list(section_candidates),
             hs_candidates=hs_candidates,
@@ -451,6 +490,9 @@ def _build_sync_search_callable(
                 "hint_headings": sorted(hint_headings) if hint_headings else None,
                 "hint_chapters": sorted(hint_chapters) if hint_chapters else None,
                 "forced_hint_headings": sorted(forced_headings) if forced_headings else None,
+                "inclusion_boost_chapters": (
+                    sorted(inclusion_matches.keys()) if inclusion_matches else None
+                ),
             },
         )
 

@@ -413,8 +413,8 @@ def test_build_messages_contains_sandbox_blocks_and_escapes_user_input() -> None
     assert "<notes" in text
     # 사용자 입력의 <>는 이스케이프
     assert "&lt;악성 태그&gt;" in text
-    # system 이 아닌 user content 에 기록 지시
-    assert TOOL_NAME_VERIFY in text
+    # PydanticAI 경로에서는 tool 이름 문자열 대신 구조화 출력 지시문이 들어감
+    assert "구조화" in text or "verdict" in text
 
 
 def test_build_messages_includes_only_available_note_kinds() -> None:
@@ -462,86 +462,82 @@ def test_parse_verdict_preserves_null_heading_for_general_rule() -> None:
     assert v.matched_clauses[0].heading is None
 
 
-# ---- verify_candidate (async, mocked) ----
+# ---- verify_candidate (async, PydanticAI TestModel) ----
+
+
+def _verify_override(payload: dict):
+    """pydantic-ai TestModel 로 verify agent 출력을 고정."""
+    from pydantic_ai.models.test import TestModel
+
+    from api.services.rag_verify import _verify_agent
+
+    return _verify_agent().override(model=TestModel(custom_output_args=payload))
 
 
 @pytest.mark.asyncio
 async def test_verify_candidate_happy_path_match() -> None:
-    client = AsyncMock()
-    client.messages.create = AsyncMock(
-        return_value=_make_response(
+    payload = {
+        "verdict": "match",
+        "confidence": 0.85,
+        "matched_clauses": [
             {
-                "verdict": "match",
-                "confidence": 0.85,
-                "matched_clauses": [
-                    {
-                        "source_kind": "heading_note",
-                        "heading": "8471",
-                        "excerpt": "휴대용 자동자료처리기계",
-                    }
-                ],
-                "conflicting_clauses": [],
-                "reasoning": "호 용어가 물품을 포함",
+                "source_kind": "heading_note",
+                "heading": "8471",
+                "excerpt": "휴대용 자동자료처리기계",
             }
-        )
-    )
-    out = await verify_candidate(_features(), _candidate(), _bundle_8471(), client=client)
+        ],
+        "conflicting_clauses": [],
+        "reasoning": "호 용어가 물품을 포함",
+    }
+    with _verify_override(payload):
+        out = await verify_candidate(_features(), _candidate(), _bundle_8471())
     assert out.verdict == "match"
     assert out.candidate_heading == "8471"
     assert len(out.matched_clauses) == 1
     assert out.confidence == 0.85
 
-    kwargs = client.messages.create.await_args.kwargs
-    assert kwargs["tool_choice"] == {"type": "tool", "name": TOOL_NAME_VERIFY}
-
 
 @pytest.mark.asyncio
 async def test_verify_candidate_empty_bundle_returns_uncertain_without_llm() -> None:
-    client = AsyncMock()
-    client.messages.create = AsyncMock()  # 호출되면 안 됨
-    empty_bundle = NoteBundle(heading="9999", hsk_year=2022)
+    """빈 bundle 이면 agent 호출 없이 즉시 uncertain 반환."""
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai.messages import ModelResponse
 
-    out = await verify_candidate(_features(), _candidate("9999"), empty_bundle, client=client)
+    call_count = 0
+
+    def _never_call(messages, info) -> ModelResponse:
+        nonlocal call_count
+        call_count += 1
+        raise AssertionError("agent 가 호출되면 안 됨")
+
+    from api.services.rag_verify import _verify_agent
+
+    empty_bundle = NoteBundle(heading="9999", hsk_year=2022)
+    with _verify_agent().override(model=FunctionModel(_never_call)):
+        out = await verify_candidate(_features(), _candidate("9999"), empty_bundle)
     assert out.verdict == "uncertain"
     assert out.confidence == 0.0
-    assert client.messages.create.await_count == 0
-
-
-@pytest.mark.asyncio
-async def test_verify_candidate_raises_when_no_tool_use() -> None:
-    client = AsyncMock()
-    client.messages.create = AsyncMock(
-        return_value=SimpleNamespace(
-            content=[SimpleNamespace(type="text", text="no")],
-            stop_reason="end_turn",
-            usage=None,
-        )
-    )
-    with pytest.raises(RuntimeError, match="tool_use"):
-        await verify_candidate(_features(), _candidate(), _bundle_8471(), client=client)
+    assert call_count == 0
 
 
 @pytest.mark.asyncio
 async def test_verify_candidate_applies_citation_guard() -> None:
-    client = AsyncMock()
-    client.messages.create = AsyncMock(
-        return_value=_make_response(
+    """LLM 이 원문에 없는 환각 excerpt 를 내면 환각 가드가 uncertain 으로 강등."""
+    payload = {
+        "verdict": "match",
+        "confidence": 0.9,
+        "matched_clauses": [
             {
-                "verdict": "match",
-                "confidence": 0.9,
-                "matched_clauses": [
-                    {
-                        "source_kind": "heading_note",
-                        "heading": "8471",
-                        "excerpt": "이 원문에 없는 완전한 환각 문장입니다",
-                    }
-                ],
-                "conflicting_clauses": [],
-                "reasoning": "fake",
+                "source_kind": "heading_note",
+                "heading": "8471",
+                "excerpt": "이 원문에 없는 완전한 환각 문장입니다",
             }
-        )
-    )
-    out = await verify_candidate(_features(), _candidate(), _bundle_8471(), client=client)
+        ],
+        "conflicting_clauses": [],
+        "reasoning": "fake",
+    }
+    with _verify_override(payload):
+        out = await verify_candidate(_features(), _candidate(), _bundle_8471())
     assert out.verdict == "uncertain"
     assert out.confidence == pytest.approx(0.9 * CITATION_DOWNGRADE_FACTOR)
     assert out.matched_clauses == []
@@ -551,15 +547,47 @@ async def test_verify_candidate_applies_citation_guard() -> None:
 # ---- verify_candidates (Top-N parallel) ----
 
 
+def _function_model_for_payloads(payloads_by_heading: dict[str, dict | Exception]):
+    """user prompt 안에 heading 이 포함되면 그에 매핑된 payload 를 반환하는 FunctionModel.
+
+    값이 ``Exception`` 이면 해당 heading 호출 시 예외 발생.
+    """
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    from pydantic_ai.models.function import FunctionModel
+
+    def _impl(messages, info) -> ModelResponse:
+        # 마지막 user 프롬프트에서 heading 추출
+        user_text = ""
+        for m in messages:
+            for part in getattr(m, "parts", []) or []:
+                if type(part).__name__ == "UserPromptPart":
+                    content = part.content
+                    if isinstance(content, str):
+                        user_text += content
+                    elif isinstance(content, list):
+                        for x in content:
+                            if isinstance(x, str):
+                                user_text += x
+        for heading, payload in payloads_by_heading.items():
+            if heading in user_text:
+                if isinstance(payload, Exception):
+                    raise payload
+                tool_name = info.output_tools[0].name
+                return ModelResponse(
+                    parts=[ToolCallPart(tool_name=tool_name, args=payload, tool_call_id=f"t-{heading}")]
+                )
+        raise AssertionError(f"heading 매치 실패 user_text={user_text!r}")
+
+    return FunctionModel(_impl)
+
+
 @pytest.mark.asyncio
 async def test_verify_candidates_gathers_topn_and_records_errors(monkeypatch) -> None:
     # fetch_note_bundle 을 가짜로 치환: 두 후보 모두 non-empty bundle
-    # (empty bundle 이면 LLM 을 안 부르고 즉시 uncertain 을 내므로 실패 경로를 못 탐)
     from api.services import rag_verify as rv
+    from api.services.rag_verify import _verify_agent
 
     def fake_fetch(session, heading, hsk_year=2022):
-        # 두 heading 모두 non-empty bundle. 8471 의 원문은 아래 side_effect 의
-        # excerpt ("휴대용 자동자료처리기계") 와 substring 매치하도록 구성.
         return NoteBundle(
             heading=heading,
             hsk_year=2022,
@@ -570,35 +598,26 @@ async def test_verify_candidates_gathers_topn_and_records_errors(monkeypatch) ->
 
     monkeypatch.setattr(rv, "fetch_note_bundle", fake_fetch)
 
-    client = AsyncMock()
-
-    def side_effect(**kwargs):
-        # 두 번째 후보(6109)만 예외로 실패 시뮬레이션
-        msgs = kwargs["messages"][0]["content"]
-        if "6109" in msgs:
-            raise RuntimeError("simulated LLM failure")
-        return _make_response(
-            {
-                "verdict": "match",
-                "confidence": 0.8,
-                "matched_clauses": [
-                    {
-                        "source_kind": "heading_note",
-                        "heading": "8471",
-                        "excerpt": "휴대용 자동자료처리기계",
-                    }
-                ],
-                "conflicting_clauses": [],
-                "reasoning": "ok",
-            }
-        )
-
-    client.messages.create = AsyncMock(side_effect=side_effect)
+    payloads = {
+        "8471": {
+            "verdict": "match",
+            "confidence": 0.8,
+            "matched_clauses": [
+                {
+                    "source_kind": "heading_note",
+                    "heading": "8471",
+                    "excerpt": "휴대용 자동자료처리기계",
+                }
+            ],
+            "conflicting_clauses": [],
+            "reasoning": "ok",
+        },
+        "6109": RuntimeError("simulated LLM failure"),
+    }
 
     candidates = [_candidate("8471"), _candidate("6109")]
-    result = await verify_candidates(
-        _features(), candidates, MagicMock(), claude_client=client, top_n=3
-    )
+    with _verify_agent().override(model=_function_model_for_payloads(payloads)):
+        result = await verify_candidates(_features(), candidates, MagicMock(), top_n=3)
 
     assert isinstance(result, DeepVerifyResult)
     assert len(result.verdicts) == 1
@@ -611,9 +630,7 @@ async def test_verify_candidates_gathers_topn_and_records_errors(monkeypatch) ->
 
 @pytest.mark.asyncio
 async def test_verify_candidates_empty_input() -> None:
-    result = await verify_candidates(
-        _features(), [], MagicMock(), claude_client=AsyncMock(), top_n=3
-    )
+    result = await verify_candidates(_features(), [], MagicMock(), top_n=3)
     assert result.verdicts == []
     assert result.errors == []
     assert result.meta["processed"] == 0
@@ -622,6 +639,7 @@ async def test_verify_candidates_empty_input() -> None:
 @pytest.mark.asyncio
 async def test_verify_candidates_respects_top_n(monkeypatch) -> None:
     from api.services import rag_verify as rv
+    from api.services.rag_verify import _verify_agent
 
     fetch_calls: list[str] = []
 
@@ -631,29 +649,187 @@ async def test_verify_candidates_respects_top_n(monkeypatch) -> None:
 
     monkeypatch.setattr(rv, "fetch_note_bundle", fake_fetch)
 
-    client = AsyncMock()
-    client.messages.create = AsyncMock(
-        return_value=_make_response(
+    payload = {
+        "verdict": "match",
+        "confidence": 0.7,
+        "matched_clauses": [
             {
-                "verdict": "match",
-                "confidence": 0.7,
-                "matched_clauses": [
-                    {
-                        "source_kind": "heading_note",
-                        "heading": "8471",
-                        "excerpt": "휴대용 자동자료처리기계",
-                    }
-                ],
-                "conflicting_clauses": [],
-                "reasoning": "ok",
+                "source_kind": "heading_note",
+                "heading": "8471",
+                "excerpt": "휴대용 자동자료처리기계",
             }
-        )
-    )
+        ],
+        "conflicting_clauses": [],
+        "reasoning": "ok",
+    }
+
+    from pydantic_ai.models.test import TestModel
 
     candidates = [_candidate("8471"), _candidate("8472"), _candidate("8473"), _candidate("8474")]
-    result = await verify_candidates(
-        _features(), candidates, MagicMock(), claude_client=client, top_n=2
-    )
+    with _verify_agent().override(model=TestModel(custom_output_args=payload)):
+        result = await verify_candidates(_features(), candidates, MagicMock(), top_n=2)
     assert result.meta["processed"] == 2
     assert len(fetch_calls) == 2
     assert len(result.verdicts) == 2
+
+
+# ---- Sprint A: hs_nodes 결정적 배제 게이트 + hints 주입 ----
+
+
+def _node_ctx_with_exclusions(
+    *,
+    chapter_code: str = "84",
+    chapter_exclusions: list[str] | None = None,
+    section_code: str = "XVI",
+    section_exclusions: list[str] | None = None,
+    essential_character: str | None = None,
+    notes_excerpt: str = "류주 본문 (최소 50자 충족하는 더미 텍스트입니다. 이 본문은 테스트 용도.)",
+) -> "NodeContext":
+    """테스트용 NodeContext 생성 — 실제 HSNode row 없이 SimpleNamespace 로 stub."""
+    from api.services.hs_node_lookup import NodeContext
+
+    chapter = SimpleNamespace(
+        code=chapter_code,
+        level=2,
+        title_ko=f"제{chapter_code}류",
+        exclusion_keywords=chapter_exclusions or [],
+        inclusion_keywords=[],
+        essential_character=essential_character,
+        processing_stage=None,
+        notes_excerpt=notes_excerpt,
+        source_reference=f"HSK 2022 제{chapter_code}류 주",
+        parent_code=section_code,
+    )
+    section = SimpleNamespace(
+        code=section_code,
+        level=0,
+        title_ko=f"제{section_code}부",
+        exclusion_keywords=section_exclusions or [],
+        inclusion_keywords=[],
+        essential_character=None,
+        processing_stage=None,
+        notes_excerpt="",
+        source_reference=None,
+        parent_code=None,
+    )
+    return NodeContext(chapter=chapter, section=section)
+
+
+@pytest.mark.asyncio
+async def test_verify_candidate_deterministic_exclusion_matches_chapter_keyword() -> None:
+    """chapter exclusion_keywords 에 제품 특성이 매치되면 LLM 호출 없이 mismatch."""
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai.messages import ModelResponse
+
+    from api.services.rag_verify import _verify_agent
+
+    # 8인치 플라스틱 원판 (해설서에 "플라스틱으로 만든 밀스톤은 제외한다" 가 있다고 가정)
+    features = _features(
+        product_name_normalized="플라스틱 밀스톤 제품",
+        materials=["플라스틱"],
+    )
+    bundle = _bundle_8471()
+    bundle.node_ctx = _node_ctx_with_exclusions(
+        chapter_exclusions=["플라스틱 밀스톤 제품"],
+    )
+    # 검증 목적: chapter note 원문에도 해당 문구가 있어야 citation guard 통과.
+    bundle.notes[("chapter_note", "ko")] = (
+        "이 류에서 다음 각 목의 것은 제외한다. 가. 플라스틱 밀스톤 제품 (제39류)."
+    )
+
+    call_count = 0
+
+    def _never_call(messages, info) -> ModelResponse:
+        nonlocal call_count
+        call_count += 1
+        raise AssertionError("LLM 이 호출되면 안 됨 — 결정적 배제 게이트가 가로막아야 함")
+
+    with _verify_agent().override(model=FunctionModel(_never_call)):
+        out = await verify_candidate(features, _candidate(), bundle)
+
+    assert out.verdict == "mismatch"
+    assert call_count == 0, "deterministic exclusion 시 LLM 호출 금지"
+    assert len(out.conflicting_clauses) == 1
+    assert "플라스틱 밀스톤 제품" in out.conflicting_clauses[0].excerpt
+
+
+@pytest.mark.asyncio
+async def test_verify_candidate_exclusion_short_keyword_ignored() -> None:
+    """키워드가 MIN_DETERMINISTIC_KEYWORD_LEN 미만이면 결정적 배제 안 함 — LLM 위임."""
+    payload = {
+        "verdict": "match",
+        "confidence": 0.85,
+        "matched_clauses": [
+            {
+                "source_kind": "heading_note",
+                "heading": "8471",
+                "excerpt": "휴대용 자동자료처리기계",
+            }
+        ],
+        "conflicting_clauses": [],
+        "reasoning": "ok",
+    }
+
+    features = _features(product_name_normalized="노트북 컴퓨터")
+    bundle = _bundle_8471()
+    # 3자 키워드 "노트북" 은 MIN 미만이라 무시돼야 함.
+    bundle.node_ctx = _node_ctx_with_exclusions(chapter_exclusions=["노트북"])
+
+    with _verify_override(payload):
+        out = await verify_candidate(features, _candidate(), bundle)
+
+    assert out.verdict == "match"
+
+
+@pytest.mark.asyncio
+async def test_verify_candidate_exclusion_no_match_proceeds_to_llm() -> None:
+    """exclusion_keywords 가 있어도 제품에 매치 안 되면 정상 LLM 플로우."""
+    payload = {
+        "verdict": "match",
+        "confidence": 0.9,
+        "matched_clauses": [
+            {
+                "source_kind": "heading_note",
+                "heading": "8471",
+                "excerpt": "휴대용 자동자료처리기계",
+            }
+        ],
+        "conflicting_clauses": [],
+        "reasoning": "ok",
+    }
+
+    features = _features(product_name_normalized="노트북 컴퓨터")
+    bundle = _bundle_8471()
+    bundle.node_ctx = _node_ctx_with_exclusions(
+        chapter_exclusions=["철도차량용 부분품 세트"],  # 노트북과 매치 안 됨
+    )
+
+    with _verify_override(payload):
+        out = await verify_candidate(features, _candidate(), bundle)
+
+    assert out.verdict == "match"
+
+
+def test_build_verification_user_text_includes_classification_hints() -> None:
+    """node_ctx 의 essential_character 가 프롬프트에 주입되는지."""
+    from api.services.rag_verify import build_verification_user_text
+
+    bundle = _bundle_8471()
+    bundle.node_ctx = _node_ctx_with_exclusions(
+        essential_character="용도",
+    )
+    text = build_verification_user_text(_features(), _candidate(), bundle)
+    assert "<classification_hints>" in text
+    assert "본질적 특성 축: 용도" in text
+    # hint 는 참고자료임이 명시돼 있어야 함.
+    assert "참고자료" in text
+
+
+def test_build_verification_user_text_no_hints_block_when_ctx_missing() -> None:
+    """node_ctx 가 없으면 hints 블록 자체가 없다."""
+    from api.services.rag_verify import build_verification_user_text
+
+    bundle = _bundle_8471()
+    bundle.node_ctx = None
+    text = build_verification_user_text(_features(), _candidate(), bundle)
+    assert "<classification_hints>" not in text

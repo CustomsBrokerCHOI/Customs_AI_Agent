@@ -70,21 +70,74 @@ def _use_real_engine() -> bool:
     return bool(settings.anthropic_api_key and settings.openai_api_key)
 
 
+def _classify_single_error(raw: str) -> str | None:
+    """단일 예외 문자열 → 친화 라벨. 매치 없으면 None."""
+    low = raw.lower()
+    if "credit balance" in low or "credit_balance" in low:
+        return "Anthropic 크레딧 부족"
+    # DeepSeek 잔액 부족: 402 + "Insufficient Balance"
+    if "insufficient balance" in low or ("status_code: 402" in low and "deepseek" in low):
+        return "DeepSeek 잔액 부족"
+    if "status_code: 402" in low:
+        return "LLM 잔액 부족(402)"
+    if "insufficient_quota" in low or ("billing" in low and "not_found" in low):
+        return "LLM 결제 설정 오류"
+    if "invalid_api_key" in low or "authentication" in low and "fail" in low:
+        return "LLM API 키 오류"
+    if "status_code: 503" in low or ("unavailable" in low and "currently" in low):
+        return "Gemini 일시 과부하(503)"
+    if "status_code: 429" in low or "rate_limit_error" in low or "error code: 429" in raw:
+        return "LLM rate limit"
+    if "error code: 529" in raw or "overloaded_error" in low:
+        return "Claude 혼잡(529)"
+    return None
+
+
 def _friendly_error_message(exc: Exception) -> str:
     """원시 예외 메시지를 관세사가 이해할 수 있는 형태로 변환.
 
-    Anthropic 429(rate_limit) / 529(overloaded) 등은 긴 JSON 이 그대로 노출되면
-    난해하므로 간단한 안내로 치환. 나머지는 기존처럼 잘라서 노출.
+    ``FallbackExceptionGroup`` 등 ExceptionGroup 은 각 프로바이더 실패 사유를 나열.
+    전부 분류 실패하면 원문을 500자로 잘라 마지막 수단으로 노출.
     """
-    raw = str(exc)
-    if "rate_limit_error" in raw or "Error code: 429" in raw:
+    # ExceptionGroup 언랩 (FallbackExceptionGroup 포함)
+    subs = getattr(exc, "exceptions", None)
+    if subs:
+        labels: list[str] = []
+        raws: list[str] = []
+        for i, sub in enumerate(subs, 1):
+            s = str(sub)
+            raws.append(s)
+            label = _classify_single_error(s)
+            labels.append(label or f"오류 {i}: {s[:120]}")
+        joined = " / ".join(labels)
+        # 모든 폴백 실패 → 권장 조치도 함께.
+        advice = ""
+        if any("Anthropic 크레딧" in l for l in labels):
+            advice += " · Anthropic Plans & Billing 에서 크레딧 충전."
+        if any("DeepSeek 잔액" in l for l in labels):
+            advice += " · DeepSeek platform.deepseek.com 에서 최소 $2 선충전."
+        if any("rate limit" in l.lower() for l in labels):
+            advice += " · Gemini Free-tier RPM 한도 초과 — 수 분 대기 후 재시도."
+        if any("503" in l for l in labels):
+            advice += " · Gemini 과부하는 수 초~수 분 후 자동 해소, 다시 시도."
+        return f"분류 LLM 모두 실패: {joined}.{advice}".rstrip()
+
+    # 단일 예외
+    label = _classify_single_error(str(exc))
+    if label == "Anthropic 크레딧 부족":
         return (
-            "LLM 호출량이 잠시 한도를 초과했습니다. 1~2분 뒤 다시 시도해 주세요. "
-            "(Claude 분당 토큰 한도)"
+            "LLM API 크레딧 잔액이 부족해 분류를 완료할 수 없습니다. "
+            "관리자에게 Anthropic Plans & Billing 에서 크레딧 충전 요청하세요."
         )
-    if "Error code: 529" in raw or "overloaded_error" in raw:
-        return "Claude API 가 일시 혼잡 상태입니다. 잠시 뒤 재시도해 주세요."
-    return raw[:500]
+    if label == "LLM 결제 설정 오류":
+        return "LLM API 결제 설정이 올바르지 않습니다. 관리자에게 API 키 · 결제 한도 확인 요청하세요."
+    if label == "Gemini 일시 과부하(503)":
+        return "Gemini API 가 일시 과부하 상태입니다(503). 잠시 뒤 재시도해 주세요."
+    if label == "LLM rate limit":
+        return "LLM 호출량이 분당 한도를 초과했습니다. 1~2분 뒤 다시 시도해 주세요."
+    if label == "Claude 혼잡(529)":
+        return "Claude API 가 일시 혼잡(529)입니다. 잠시 뒤 재시도해 주세요."
+    return str(exc)[:500]
 
 
 async def _run_classify_job(job_id: uuid.UUID) -> None:

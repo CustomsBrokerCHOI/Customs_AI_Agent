@@ -42,6 +42,43 @@ class Settings(BaseSettings):
     # Gemini Grounded Search: 물품명만/사진만 입력 시 웹 검색으로 description 보강.
     # 미설정 시 /classify/enrich 는 503 반환하고 분류 본 플로우는 영향 없음.
     gemini_api_key: str | None = None
+    # DeepSeek (chat=V3, reasoner=R1). 저비용 고품질 한국어 추론 — Verify 에 적합.
+    # 미설정 시 DeepSeek 포함된 체인에서 자동 스킵(그 단계만 다음 폴백 모델로 진행).
+    deepseek_api_key: str | None = None
+    # Groq (무료 티어 — Llama 3.3 / 4 고속 추론, tool use 지원). 테스트·개발 용.
+    # 미설정 시 체인에서 자동 스킵.
+    groq_api_key: str | None = None
+
+    # --- 단계별 LLM 모델 (PydanticAI 라우팅) ---
+    # pydantic-ai 모델 ID 포맷: "<provider>:<model>"
+    #   - anthropic:claude-sonnet-4-6, anthropic:claude-opus-4-6
+    #   - google-gla:gemini-2.5-flash, google-gla:gemini-2.5-pro, google-gla:gemini-2.0-flash
+    #   - deepseek:deepseek-chat (V3), deepseek:deepseek-reasoner (R1)
+    #   - openai:gpt-4o-mini
+    # 폴백은 쉼표로 다중 지정 가능 — 앞에서부터 순차 시도(키/쿼터 부재 시 자동 스킵).
+    input_gate_model: str = Field(
+        "google-gla:gemini-2.5-flash",
+        description="Input Gate (물품 특징 추출).",
+    )
+    input_gate_fallback_model: str | None = Field(
+        "google-gla:gemini-2.0-flash,anthropic:claude-sonnet-4-6",
+        description="쉼표 구분 폴백 체인. 쿼터가 분리된 2.0-flash 를 1차 폴백으로 두면 Flash 계열 과부하 시 회피 가능.",
+    )
+    search_model: str = Field(
+        "google-gla:gemini-2.5-flash",
+        description="Section 결정 (부 후보 선정).",
+    )
+    search_fallback_model: str | None = Field(
+        "google-gla:gemini-2.0-flash,anthropic:claude-sonnet-4-6"
+    )
+    verify_model: str = Field(
+        "anthropic:claude-sonnet-4-6",
+        description="Deep Verify (법적 근거 대조). 품질 최우선.",
+    )
+    verify_fallback_model: str | None = Field(
+        "deepseek:deepseek-chat,google-gla:gemini-2.5-pro",
+        description="Claude 실패 시 DeepSeek V3 (저비용) → Gemini Pro 순으로 폴백.",
+    )
 
     # --- 분류 엔진 ---
     top_k_candidates: int = Field(30, description="pgvector Top-K 후보 수")

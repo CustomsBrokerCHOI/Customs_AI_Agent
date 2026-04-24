@@ -10,6 +10,8 @@ passlib[bcrypt]>=1.7
 bcrypt<4.1  # passlib 1.7.4 (미유지) 의 detect_wrap_bug 이 bcrypt 4.1+ 의 72바이트 제한과 충돌
 pydantic[email]>=2.9
 pydantic-settings>=2.6
+# PydanticAI 멀티-프로바이더 에이전트 레이어 (Input Gate / Search / Deep Verify 라우팅)
+pydantic-ai-slim[anthropic,google]>=1.86
 anthropic>=0.40
 openai>=1.50
 google-genai>=1.73

@@ -1,12 +1,16 @@
-"""Phase 3-A Input Gate 단위 테스트 (네트워크 없음, Anthropic 모킹)."""
+"""Phase 3-A Input Gate 단위 테스트 (네트워크 없음).
+
+LLM 호출 경로는 PydanticAI ``TestModel`` 로 모킹. 기존 Anthropic SDK 직접 모킹은
+``build_messages`` / ``_pick_tool_use`` 같은 저수준 헬퍼 테스트에만 남아있음.
+"""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
+from pydantic_ai.models.test import TestModel
 
 from api.services.input_gate import (
     MAX_DESC_CHARS,
@@ -14,6 +18,7 @@ from api.services.input_gate import (
     TOOL_NAME,
     ProductFeatures,
     _coerce_tool_input,
+    _input_gate_agent,
     _pick_tool_use,
     build_messages,
     extract_features,
@@ -183,6 +188,12 @@ def _make_response(
     )
 
 
+def _override_with(tool_input: dict):
+    """pydantic-ai ``TestModel`` 로 Input Gate agent 의 출력을 고정."""
+    agent = _input_gate_agent()
+    return agent.override(model=TestModel(custom_output_args=tool_input))
+
+
 @pytest.mark.asyncio
 async def test_extract_features_happy_path() -> None:
     tool_input = {
@@ -196,26 +207,15 @@ async def test_extract_features_happy_path() -> None:
         "confidence": 0.88,
         "follow_up_questions": [],
     }
-    client = AsyncMock()
-    client.messages.create = AsyncMock(return_value=_make_response(tool_input))
-
-    result = await extract_features("노트북", "M3 맥북에어 13인치", image_url=None, client=client)
+    with _override_with(tool_input):
+        result = await extract_features("노트북", "M3 맥북에어 13인치", image_url=None)
 
     assert result.features.product_name_normalized == "휴대용 노트북 컴퓨터"
     assert result.features.confidence == 0.88
     assert result.needs_more_info is False
-    assert result.meta["model"] == "claude-sonnet-4-6"
-    assert result.meta["input_tokens"] == 120
-    assert result.meta["output_tokens"] == 80
-
-    # Anthropic 호출 인자 검증
-    client.messages.create.assert_awaited_once()
-    kwargs = client.messages.create.await_args.kwargs
-    assert kwargs["model"] == "claude-sonnet-4-6"
-    assert kwargs["tool_choice"] == {"type": "tool", "name": TOOL_NAME}
-    assert len(kwargs["tools"]) == 1
-    assert kwargs["tools"][0]["name"] == TOOL_NAME
-    assert kwargs["messages"][0]["role"] == "user"
+    # 토큰 수는 TestModel 이 결정하므로 값 자체보다 숫자 타입 보장만 확인
+    assert isinstance(result.meta["input_tokens"], int)
+    assert isinstance(result.meta["output_tokens"], int)
 
 
 @pytest.mark.asyncio
@@ -227,32 +227,18 @@ async def test_extract_features_sets_needs_more_info_when_questions_present() ->
         "confidence": 0.4,
         "follow_up_questions": ["재질이 구리인가 알루미늄인가?", "피복 유무?"],
     }
-    client = AsyncMock()
-    client.messages.create = AsyncMock(return_value=_make_response(tool_input))
+    with _override_with(tool_input):
+        result = await extract_features("케이블", "그냥 케이블")
 
-    result = await extract_features("케이블", "그냥 케이블", client=client)
     assert result.needs_more_info is True
     assert len(result.features.follow_up_questions) == 2
 
 
 @pytest.mark.asyncio
-async def test_extract_features_raises_when_no_tool_use() -> None:
-    client = AsyncMock()
-    # content 에 tool_use 블록이 전혀 없음 (모델이 텍스트로만 답한 상황)
-    client.messages.create = AsyncMock(
-        return_value=SimpleNamespace(
-            content=[_text_block("I refuse.")],
-            stop_reason="end_turn",
-            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
-        )
-    )
-
-    with pytest.raises(RuntimeError, match="tool_use"):
-        await extract_features("x", "y", client=client)
-
-
-@pytest.mark.asyncio
 async def test_extract_features_passes_image_url_to_messages() -> None:
+    """이미지 URL 이 user content 에 ImageUrl 로 실려 가는지 확인."""
+    from pydantic_ai import ImageUrl
+
     tool_input = {
         "product_name_normalized": "시계",
         "materials": ["금속"],
@@ -260,15 +246,38 @@ async def test_extract_features_passes_image_url_to_messages() -> None:
         "confidence": 0.9,
         "follow_up_questions": [],
     }
-    client = AsyncMock()
-    client.messages.create = AsyncMock(return_value=_make_response(tool_input))
 
-    await extract_features("시계", "손목시계", image_url="https://img/test.jpg", client=client)
+    captured: dict = {}
 
-    kwargs = client.messages.create.await_args.kwargs
-    first_block = kwargs["messages"][0]["content"][0]
-    assert first_block["type"] == "image"
-    assert first_block["source"]["url"] == "https://img/test.jpg"
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+
+    def _capture(messages, info: AgentInfo) -> ModelResponse:
+        # 최근 ModelRequest 에 들어간 user content 부분을 캡처
+        for m in messages:
+            for part in getattr(m, "parts", []) or []:
+                if type(part).__name__ == "UserPromptPart":
+                    captured["content"] = part.content
+        # TestModel 스타일로 output 반환
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name=info.output_tools[0].name,
+                    args=tool_input,
+                    tool_call_id="t1",
+                )
+            ]
+        )
+
+    agent = _input_gate_agent()
+    with agent.override(model=FunctionModel(_capture)):
+        await extract_features("시계", "손목시계", image_url="https://img/test.jpg")
+
+    content = captured.get("content")
+    assert content is not None
+    # user_prompt 는 text + ImageUrl 리스트
+    has_image = any(isinstance(p, ImageUrl) and p.url == "https://img/test.jpg" for p in content)
+    assert has_image, f"ImageUrl 부재 content={content!r}"
 
 
 # ---- _coerce_tool_input (Claude 스키마 편차 복구) ----
@@ -307,13 +316,14 @@ def test_coerce_list_fields_string_wrapped_in_list() -> None:
         "product_name_normalized": "x",
         "materials": "알루미늄",
         "functions": '["연산", "표시"]',  # JSON stringified
-        "follow_up_questions": "원산지?",
+        # follow_up 은 금지주제 필터를 통과하는 분기 질문이어야 원본 보존 확인 가능.
+        "follow_up_questions": "중량이 10kg 이하인가?",
         "confidence": 0.8,
     }
     out = _coerce_tool_input(raw)
     assert out["materials"] == ["알루미늄"]
     assert out["functions"] == ["연산", "표시"]
-    assert out["follow_up_questions"] == ["원산지?"]
+    assert out["follow_up_questions"] == ["중량이 10kg 이하인가?"]
 
 
 def test_coerce_empty_strings_on_optional_fields_become_none() -> None:
@@ -389,18 +399,112 @@ def test_coerce_preserves_normal_dict_input() -> None:
 
 @pytest.mark.asyncio
 async def test_extract_features_recovers_from_stringified_key_specs() -> None:
-    """회귀 테스트: Claude 가 key_specifications 를 stringify 해도 ValidationError 안 남."""
+    """회귀 테스트: LLM 이 key_specifications 를 stringify 해도 ValidationError 안 남.
+
+    ``ProductFeatures.model_validator`` 가 ``_coerce_tool_input`` 을 mode='before' 로 적용.
+    """
     tool_input = {
         "product_name_normalized": "데미그라스 소스",
         "materials": ["쇠고기 육수", "양파"],
         "functions": ["조리용 소스"],
         "confidence": 0.8,
-        "follow_up_questions": ["원산지?"],
+        # 가공수준은 HS 분기 질문이라 필터를 통과해야 정상.
+        "follow_up_questions": ["가공 수준은 농축물·페이스트·분말 중 어느 쪽인가?"],
         "key_specifications": '{"용량": "500ml", "포장": "병"}',
     }
-    client = AsyncMock()
-    client.messages.create = AsyncMock(return_value=_make_response(tool_input))
+    with _override_with(tool_input):
+        result = await extract_features("데미그라스 소스", "프랑스식 갈색 소스")
 
-    result = await extract_features("데미그라스 소스", "프랑스식 갈색 소스", client=client)
     assert result.features.key_specifications == {"용량": "500ml", "포장": "병"}
     assert result.needs_more_info is True
+
+
+# ---- follow_up_questions 금지주제 필터 ----
+
+
+def test_coerce_filters_origin_country_question() -> None:
+    """원산지 질문은 분류에 영향 없으므로 자동 drop."""
+    raw = {
+        "product_name_normalized": "데미그라스 소스",
+        "materials": [], "functions": [], "confidence": 0.6,
+        "follow_up_questions": [
+            "원산지는 어디인가요?",
+            "가공 수준은? (농축물·페이스트·분말)",
+        ],
+    }
+    out = _coerce_tool_input(raw)
+    assert out["follow_up_questions"] == ["가공 수준은? (농축물·페이스트·분말)"]
+
+
+def test_coerce_filters_tax_rate_and_hs_number_questions() -> None:
+    """관세율·HS 번호 묻는 질문은 분류와 무관 → drop."""
+    raw = {
+        "product_name_normalized": "x",
+        "materials": [], "functions": [], "confidence": 0.5,
+        "follow_up_questions": [
+            "관세율이 얼마인가요?",
+            "HS CODE 는 무엇으로 분류되나요?",
+            "예상 세번부호는?",
+            "성분 비율이 어떻게 되나요?",
+        ],
+    }
+    out = _coerce_tool_input(raw)
+    assert out["follow_up_questions"] == ["성분 비율이 어떻게 되나요?"]
+
+
+def test_coerce_filters_brand_and_price_questions() -> None:
+    raw = {
+        "product_name_normalized": "x",
+        "materials": [], "functions": [], "confidence": 0.5,
+        "follow_up_questions": [
+            "브랜드가 무엇인가요?",
+            "제조사는 어디인가요?",
+            "구매 단가는?",
+            "모델 번호를 알려주세요",
+            "완제품인가요, 부분품인가요?",
+        ],
+    }
+    out = _coerce_tool_input(raw)
+    assert out["follow_up_questions"] == ["완제품인가요, 부분품인가요?"]
+
+
+def test_coerce_filters_self_evident_questions() -> None:
+    """'식용입니까?' 같은 자명한 재확인 질문 drop."""
+    raw = {
+        "product_name_normalized": "Kale Powder",
+        "materials": [], "functions": [], "confidence": 0.5,
+        "follow_up_questions": [
+            "식용입니까?",
+            "컴퓨터입니까?",
+            "건조 방식은? (자연·열풍·동결)",
+        ],
+    }
+    out = _coerce_tool_input(raw)
+    assert out["follow_up_questions"] == ["건조 방식은? (자연·열풍·동결)"]
+
+
+def test_coerce_caps_followups_at_two() -> None:
+    """필터 통과 후에도 상한 2개로 자른다 (프롬프트 수량 제한 재확인)."""
+    raw = {
+        "product_name_normalized": "x",
+        "materials": [], "functions": [], "confidence": 0.5,
+        "follow_up_questions": [
+            "가공 수준은?",
+            "주성분 비율은?",
+            "형태는 완제품·부분품?",
+            "중량은 10kg 이하?",
+        ],
+    }
+    out = _coerce_tool_input(raw)
+    assert len(out["follow_up_questions"]) == 2
+
+
+def test_coerce_all_banned_produces_empty_list() -> None:
+    """모든 질문이 금지주제면 빈 배열 → needs_more_info False 로 이어짐."""
+    raw = {
+        "product_name_normalized": "x",
+        "materials": [], "functions": [], "confidence": 0.5,
+        "follow_up_questions": ["원산지?", "관세율?", "브랜드?"],
+    }
+    out = _coerce_tool_input(raw)
+    assert out["follow_up_questions"] == []

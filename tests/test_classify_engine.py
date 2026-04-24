@@ -327,9 +327,11 @@ async def test_force_classify_bypasses_input_gate_and_uses_default_top_n(
     from api.services import classify_engine as ce
 
     async def fake_extract(*a, **kw):
+        # follow_up 은 HS 분기 질문(게이트 통과). '원산지' 같은 행정 질문은 Input Gate
+        # 키워드 필터에 걸려 드랍되므로 테스트에 부적합.
         return _input_gate_result(
             needs_more_info=True,
-            follow_ups=["원산지?", "영양성분?"],  # 행정 정보 샘플 (force 로 넘어감)
+            follow_ups=["중량 10kg 이하 여부?", "완제품·부분품 여부?"],
         )
 
     async def fake_determine_sections(features, *, client=None, **kw):
@@ -381,12 +383,15 @@ async def test_force_classify_bypasses_input_gate_and_uses_default_top_n(
     # meta 에 flag + 질문 보존
     assert result.meta["force_classify"] is True
     assert result.meta["top_n"] == 3
-    assert result.meta["follow_up_questions"] == ["원산지?", "영양성분?"]
+    assert result.meta["follow_up_questions"] == [
+        "중량 10kg 이하 여부?",
+        "완제품·부분품 여부?",
+    ]
     # stage 에 bypass 표시
     assert result.meta["stages"]["input_gate"]["bypassed"] is True
     # notice 에 안내 + 질문 목록 포함
     assert "force_classify" in result.notice or "강제 진행" in result.notice
-    assert "원산지?" in result.notice
+    assert "중량 10kg 이하 여부?" in result.notice
 
 
 @pytest.mark.asyncio
